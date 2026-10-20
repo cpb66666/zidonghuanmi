@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# install.sh - 233boy/sing-box 每日自动换密与面板同步工具 一键安装/管理脚本
+# install.sh - 233boy/sing-box 每日自动换密与面板同步工具 一键安装/管理脚本 (v1.2.1)
 # 使用方式:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/cpb66666/zidonghuanmi/main/install.sh)
 # ==============================================================================
@@ -23,6 +23,18 @@ INSTALL_BIN="/usr/local/bin/sb-rotator"
 ALIAS_BIN="/usr/local/bin/sbr"
 INSTALL_DIR="/etc/sb-rotator"
 
+prompt_read() {
+    local prompt_str="$1"
+    local var_name="$2"
+    if [[ -t 0 ]]; then
+        read -rp "${prompt_str}" "${var_name}" || return 1
+    elif [[ -e /dev/tty ]]; then
+        read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
+    else
+        read -rp "${prompt_str}" "${var_name}" || return 1
+    fi
+}
+
 check_root() {
     if [[ "$(id -u)" != "0" ]]; then
         echo -e "${RED}[错误] 请使用 root 用户运行此一键脚本 (sudo -i)${NC}"
@@ -32,7 +44,7 @@ check_root() {
 
 check_dependencies() {
     local missing=()
-    for cmd in curl sed awk grep flock; do
+    for cmd in curl sed awk grep flock timeout; do
         if ! command -v "${cmd}" >/dev/null 2>&1; then
             missing+=("${cmd}")
         fi
@@ -46,15 +58,14 @@ check_dependencies() {
         echo -e "${YELLOW}[提示] 正在安装必要系统组件: ${missing[*]} ...${NC}"
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl sed gawk grep util-linux cron openssl ca-certificates >/dev/null 2>&1
+            apt-get install -y curl sed gawk grep util-linux coreutils cron openssl ca-certificates >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
-            yum install -y curl sed gawk grep util-linux cronie openssl ca-certificates >/dev/null 2>&1
+            yum install -y curl sed gawk grep util-linux coreutils cronie openssl ca-certificates >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then
-            apk add --no-cache bash curl sed gawk grep util-linux dcron openssl ca-certificates >/dev/null 2>&1
+            apk add --no-cache bash curl sed gawk grep util-linux coreutils dcron openssl ca-certificates >/dev/null 2>&1
         fi
     fi
 
-    # 确保 cron 服务处于运行状态
     systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || service cron start >/dev/null 2>&1 || true
 }
 
@@ -63,7 +74,8 @@ check_singbox_installed() {
         echo -e "${YELLOW}=================================================================${NC}"
         echo -e "${YELLOW}[提示] 未检测到 233boy/sing-box 脚本环境 (/etc/sing-box)${NC}"
         echo -e "是否现在为您自动调用 233boy 官方脚本安装 sing-box？"
-        read -rp "请输入 (y/n，默认 n 跳过): " auto_sb
+        local auto_sb=""
+        prompt_read "请输入 (y/n，默认 n 跳过): " auto_sb || true
         if [[ "${auto_sb:-n}" =~ ^[Yy]$ ]]; then
             bash <(wget -qO- -o- https://github.com/233boy/sing-box/raw/main/install.sh)
         else
@@ -95,7 +107,7 @@ set -o pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export LC_ALL=C
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 INSTALL_DIR="${INSTALL_DIR:-/etc/sb-rotator}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.env}"
 BACKUP_DIR="${BACKUP_DIR:-${INSTALL_DIR}/backup}"
@@ -119,7 +131,7 @@ NC='\033[0m'
 # ==============================================================================
 
 ensure_dirs() {
-    mkdir -p "${INSTALL_DIR}" "${BACKUP_DIR}" "${CACHE_DIR}"
+    mkdir -p "${INSTALL_DIR}" "${BACKUP_DIR}" "${CACHE_DIR}" 2>/dev/null || true
     touch "${LOG_FILE}" 2>/dev/null || true
     chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
 }
@@ -146,9 +158,36 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; log_msg "WARN" "$*"; }
 err()     { echo -e "${RED}[ERROR]${NC} $*" >&2; log_msg "ERROR" "$*"; }
 step()    { echo -e "${CYAN}[STEP]${NC} $*"; log_msg "STEP" "$*"; }
 
+# 安全读取终端输入（兼容 bash <(curl ...) 与管道执行，遇到 EOF 自动退出防止死循环）
+prompt_read() {
+    local prompt_str="$1"
+    local var_name="$2"
+    if [[ -t 0 ]]; then
+        read -rp "${prompt_str}" "${var_name}" || return 1
+    elif [[ -e /dev/tty ]]; then
+        read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
+    else
+        read -rp "${prompt_str}" "${var_name}" || return 1
+    fi
+}
+
 # 去除 233boy 脚本输出的 ANSI 颜色控制字符与回车符
 strip_ansi() {
     sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
+}
+
+# 安全调用 233boy sing-box 命令（带超时保护，且提供默认选项 1 防止触发 233boy 的 while+select 死循环导致 CPU 100%）
+run_sb_cmd() {
+    local timeout_sec="$1"
+    shift
+    local sb_bin
+    sb_bin="$(find_sb_bin)" || return 1
+
+    if command -v timeout >/dev/null 2>&1; then
+        printf '1\n' | COLUMNS=1 timeout "${timeout_sec}" "${sb_bin}" "$@" 2>&1 | strip_ansi
+    else
+        printf '1\n' | COLUMNS=1 "${sb_bin}" "$@" 2>&1 | strip_ansi
+    fi
 }
 
 # JSON 字符串安全转义
@@ -169,7 +208,7 @@ find_sb_bin() {
         return 0
     fi
     local candidate
-    for candidate in /usr/local/bin/sing-box /usr/local/bin/sb /usr/bin/sing-box /bin/sing-box /etc/sing-box/sh/sing-box.sh; do
+    for candidate in /etc/sing-box/sh/sing-box.sh /usr/local/bin/sing-box /usr/local/bin/sb /usr/bin/sing-box /bin/sing-box; do
         if [[ -x "${candidate}" ]]; then
             echo "${candidate}"
             return 0
@@ -203,7 +242,6 @@ rotate_log_if_needed() {
 # ==============================================================================
 
 load_config() {
-    # 默认值
     PANEL_URL=""
     API_KEY=""
     NODE_IDS=""
@@ -272,7 +310,6 @@ get_endpoint_url() {
         echo ""
         return 1
     fi
-    # 如果用户只填了域名（如 https://panel.example.com），自动补全标准路径 /api/v1/node/rotate
     if [[ "${url}" =~ ^https?://[^/]+$ ]]; then
         echo "${url}/api/v1/node/rotate"
     else
@@ -281,40 +318,14 @@ get_endpoint_url() {
 }
 
 # ==============================================================================
-# 节点自动发现与解析 (严格遵循 233boy sing-box 命令逻辑)
+# 节点自动发现与解析 (避免无参调用 sing-box info 陷入交互式 select 死循环)
 # ==============================================================================
 
 # 发现所有节点配置，输出格式: "序号|配置文件名(含.json)|配置短名(不含.json)"
 discover_nodes() {
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || {
-        err "未检测到 233boy sing-box 脚本，请先安装 https://github.com/233boy/sing-box"
-        return 1
-    }
+    local fname shortname
 
-    local raw_info
-    # 向 sing-box info 输入空行，当存在多个配置时会打印编号列表 "1) xxx.json" 后退出
-    raw_info="$(printf '\n' | "${sb_bin}" info 2>&1 | strip_ansi)"
-
-    local found_numbered=0
-    local line idx fname shortname
-
-    while IFS= read -r line; do
-        if [[ "${line}" =~ ^[[:space:]]*([0-9]+)\)[[:space:]]+([^[:space:]]+\.json)[[:space:]]*$ ]]; then
-            idx="${BASH_REMATCH[1]}"
-            fname="${BASH_REMATCH[2]}"
-            shortname="${fname%.json}"
-            echo "${idx}|${fname}|${shortname}"
-            found_numbered=1
-        fi
-    done <<< "${raw_info}"
-
-    if (( found_numbered == 1 )); then
-        return 0
-    fi
-
-    # 如果 sing-box info 没有出现 "1) xxx.json"，说明当前只有 1 个节点（233boy 脚本自动选中了该唯一节点）
-    # 或者通过 /etc/sing-box/conf/*.json 进行兜底读取，保持与 233boy 相同的字典序
+    # 1. 优先直接扫描 /etc/sing-box/conf/*.json（与 233boy 脚本内部生成 select 列表的源目录及排序完全一致，0 延迟且绝不卡死）
     if [[ -d "${SB_CONF_DIR}" ]]; then
         local i=1
         local f
@@ -331,6 +342,23 @@ discover_nodes() {
         fi
     fi
 
+    # 2. 若配置目录不在默认位置，使用带 '1\n' 输入与超时保护的 `sing-box info` 提取菜单项
+    local raw_info
+    raw_info="$(run_sb_cmd 5 info)" || return 1
+
+    local found_numbered=0
+    local line idx
+    while IFS= read -r line; do
+        if [[ "${line}" =~ ^[[:space:]]*([0-9]+)\)[[:space:]]+([^[:space:]]+\.json)[[:space:]]*$ ]]; then
+            idx="${BASH_REMATCH[1]}"
+            fname="${BASH_REMATCH[2]}"
+            shortname="${fname%.json}"
+            echo "${idx}|${fname}|${shortname}"
+            found_numbered=1
+        fi
+    done <<< "$(echo "${raw_info}" | grep -Eo '[0-9]+\)[[:space:]]+[^[:space:]]+\.json' | sort -n)"
+
+    (( found_numbered == 1 )) && return 0
     return 1
 }
 
@@ -361,7 +389,6 @@ resolve_panel_node_id() {
     local pos=$(( target_idx - 1 ))
     if (( pos >= 0 && pos < ${#items[@]} )); then
         local val="${items[$pos]}"
-        # 去除可能的 :后缀
         val="${val%%:*}"
         if [[ -n "${val}" && "${val}" != "0" && "${val}" != "-" ]]; then
             echo "${val}"
@@ -373,69 +400,80 @@ resolve_panel_node_id() {
     return 1
 }
 
-# 调用 `sing-box info [name]` 查询节点详情并判断协议与凭据类型
+# 查询节点详情并判断协议与凭据类型
+# 传入完整配置文件名 ${fname} 给 `sing-box info [name]` 以确保精确唯一匹配，同时结合本地 JSON 快速解析
 # 返回格式: protocol|port|rotate_cmd_type|current_credential
 inspect_node_info() {
     local shortname="$1"
     local fname="$2"
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || return 1
+    local conf_path="${SB_CONF_DIR}/${fname}"
 
-    local info_out
-    info_out="$(printf '\n' | "${sb_bin}" info "${shortname}" 2>&1 | strip_ansi)"
-
-    # 1. 提取协议名称
     local proto=""
-    proto="$(echo "${info_out}" | awk -F'[=:]' '/协议|\(protocol\)/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print tolower($2); exit}')"
-    if [[ -z "${proto}" ]]; then
-        # 从文件名推断 (例如 VLESS-REALITY-15624.json -> vless-reality)
-        proto="$(echo "${shortname}" | sed -E 's/-[0-9]+$//' | tr '[:upper:]' '[:lower:]')"
+    local port=""
+    local rotate_type=""
+    local cred=""
+
+    # 1. 优先尝试从本地配置文件快速读取基础字段（毫秒级响应，不阻塞）
+    if [[ -f "${conf_path}" ]]; then
+        proto="$(grep -Eo '"type"[[:space:]]*:[[:space:]]*"[^"]+"' "${conf_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/' | tr '[:upper:]' '[:lower:]')"
+        port="$(grep -Eo '"listen_port"[[:space:]]*:[[:space:]]*[0-9]+' "${conf_path}" 2>/dev/null | head -n1 | grep -Eo '[0-9]+')"
+        if grep -q '"uuid"' "${conf_path}" 2>/dev/null; then
+            rotate_type="id"
+            cred="$(grep -Eo '"uuid"[[:space:]]*:[[:space:]]*"[^"]+"' "${conf_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
+        elif grep -q '"password"' "${conf_path}" 2>/dev/null; then
+            rotate_type="passwd"
+            cred="$(grep -Eo '"password"[[:space:]]*:[[:space:]]*"[^"]+"' "${conf_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
+        fi
     fi
 
-    # 2. 提取端口
-    local port=""
-    port="$(echo "${info_out}" | awk -F'[=:]' '/端口|\(port\)/ {gsub(/[^0-9]/, "", $2); if ($2 != "") {print $2; exit}}')"
+    # 2. 如果本地文件未提取全，或者需要通过 `sing-box info [name]` 获取详情（使用完整文件名精确匹配）
+    if [[ -z "${proto}" || -z "${port}" || -z "${rotate_type}" || -z "${cred}" ]]; then
+        local info_out
+        info_out="$(run_sb_cmd 5 info "${fname}")"
+        if [[ -z "${info_out}" ]]; then
+            info_out="$(run_sb_cmd 5 info "${shortname}")"
+        fi
+
+        if [[ -z "${proto}" ]]; then
+            proto="$(echo "${info_out}" | awk -F'[=:]' '/协议|\(protocol\)/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print tolower($2); exit}')"
+        fi
+        if [[ -z "${port}" ]]; then
+            port="$(echo "${info_out}" | awk -F'[=:]' '/端口|\(port\)/ {gsub(/[^0-9]/, "", $2); if ($2 != "") {print $2; exit}}')"
+        fi
+        if [[ -z "${rotate_type}" ]]; then
+            if echo "${info_out}" | grep -Eqi '用户ID|\(id\)|uuid'; then
+                rotate_type="id"
+            elif echo "${info_out}" | grep -Eqi '密码|\(password\)|passwd'; then
+                rotate_type="passwd"
+            fi
+        fi
+        if [[ -z "${cred}" ]]; then
+            if [[ "${rotate_type}" == "id" ]]; then
+                cred="$(echo "${info_out}" | awk -F'[=:]' '/用户ID|\(id\)|uuid/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+            else
+                cred="$(echo "${info_out}" | awk -F'[=:]' '/密码|\(password\)|passwd/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+            fi
+        fi
+    fi
+
+    # 3. 兜底从配置文件名推断协议、端口与改密命令类型
+    if [[ -z "${proto}" ]]; then
+        proto="$(echo "${shortname}" | sed -E 's/-[0-9]+$//' | tr '[:upper:]' '[:lower:]')"
+    fi
     if [[ -z "${port}" && "${shortname}" =~ -([0-9]+)$ ]]; then
         port="${BASH_REMATCH[1]}"
     fi
     [[ -z "${port}" ]] && port="0"
 
-    # 3. 判定应该使用 `sing-box id [name] auto` 还是 `sing-box passwd [name] auto`
-    local rotate_type=""
-    if echo "${info_out}" | grep -Eqi '用户ID|\(id\)|uuid'; then
-        rotate_type="id"
-    elif echo "${info_out}" | grep -Eqi '密码|\(password\)|passwd'; then
-        rotate_type="passwd"
-    fi
-
-    # 如果输出文本未明确匹配，根据协议名或配置文件内容精确判断
     if [[ -z "${rotate_type}" ]]; then
         case "${proto}" in
             *vless*|*vmess*|*tuic*)
                 rotate_type="id"
                 ;;
-            *anytls*|*hysteria*|*hy2*|*trojan*|*shadowsocks*|*ss*|*socks*)
+            *)
                 rotate_type="passwd"
                 ;;
-            *)
-                if [[ -f "${SB_CONF_DIR}/${fname}" ]] && grep -q '"uuid"' "${SB_CONF_DIR}/${fname}" 2>/dev/null; then
-                    rotate_type="id"
-                else
-                    rotate_type="passwd"
-                fi
-                ;;
         esac
-    fi
-
-    # 4. 提取当前密码或 UUID
-    local cred=""
-    if [[ "${rotate_type}" == "id" ]]; then
-        cred="$(echo "${info_out}" | awk -F'[=:]' '/用户ID|\(id\)|uuid/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-    else
-        cred="$(echo "${info_out}" | awk -F'[=:]' '/密码|\(password\)|passwd/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-    fi
-    if [[ -z "${cred}" && -f "${SB_CONF_DIR}/${fname}" ]]; then
-        cred="$(grep -Eo '"(uuid|password)"[[:space:]]*:[[:space:]]*"[^"]+"' "${SB_CONF_DIR}/${fname}" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
     fi
 
     echo "${proto}|${port}|${rotate_type}|${cred}"
@@ -444,23 +482,25 @@ inspect_node_info() {
 # 调用 `sing-box url [name]` 获取完整节点链接
 get_node_url() {
     local shortname="$1"
-    local proto="$2"
-    local port="$3"
-    local cred="$4"
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || return 1
+    local fname="$2"
+    local proto="$3"
+    local port="$4"
+    local cred="$5"
 
-    local url_out
-    url_out="$(printf '\n' | "${sb_bin}" url "${shortname}" 2>&1 | strip_ansi)"
-
-    # 提取包含 scheme:// 的完整链接行
-    local node_url=""
+    local url_out node_url=""
+    # 优先传入完整文件名 ${fname}，确保不会因为前缀相似触发选择菜单
+    url_out="$(run_sb_cmd 8 url "${fname}")"
     node_url="$(echo "${url_out}" | grep -Eo '(vless|vmess|trojan|hysteria2|hy2|tuic|ss|shadowsocks|anytls|socks5?|http|https)://[^[:space:]]+' | tail -n1)"
+
+    if [[ -z "${node_url}" ]]; then
+        url_out="$(run_sb_cmd 8 url "${shortname}")"
+        node_url="$(echo "${url_out}" | grep -Eo '(vless|vmess|trojan|hysteria2|hy2|tuic|ss|shadowsocks|anytls|socks5?|http|https)://[^[:space:]]+' | tail -n1)"
+    fi
 
     # 若 `sing-box url` 未打印标准带 scheme 的行，尝试从 `sing-box info` 中提取
     if [[ -z "${node_url}" ]]; then
         local info_out
-        info_out="$(printf '\n' | "${sb_bin}" info "${shortname}" 2>&1 | strip_ansi)"
+        info_out="$(run_sb_cmd 8 info "${fname}")"
         node_url="$(echo "${info_out}" | grep -Eo '(vless|vmess|trojan|hysteria2|hy2|tuic|ss|shadowsocks|anytls|socks5?|http|https)://[^[:space:]]+' | tail -n1)"
     fi
 
@@ -476,10 +516,8 @@ get_node_url() {
 
 # 获取本机公网 IP（优先使用 `sing-box ip`）
 get_server_ip() {
-    local sb_bin ip=""
-    if sb_bin="$(find_sb_bin)"; then
-        ip="$(printf '\n' | "${sb_bin}" ip 2>/dev/null | strip_ansi | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
-    fi
+    local ip=""
+    ip="$(run_sb_cmd 5 ip | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
     if [[ -z "${ip}" ]]; then
         ip="$(curl -fsSL4 --connect-timeout 4 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
     fi
@@ -494,7 +532,6 @@ get_server_ip() {
 backup_configs() {
     ensure_dirs
     if [[ -d "${SB_CONF_DIR}" ]]; then
-        rm -rf "${BACKUP_DIR}/ prev" 2>/dev/null || true
         mkdir -p "${BACKUP_DIR}/latest"
         cp -af "${SB_CONF_DIR}"/*.json "${BACKUP_DIR}/latest/" 2>/dev/null || true
         date '+%Y-%m-%d %H:%M:%S' > "${BACKUP_DIR}/latest/backup_time.txt"
@@ -503,12 +540,10 @@ backup_configs() {
 }
 
 rollback_configs() {
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || return 1
     if [[ -d "${BACKUP_DIR}/latest" ]] && compgen -G "${BACKUP_DIR}/latest/*.json" >/dev/null; then
         warn "正在回滚 sing-box 节点配置至轮换前状态..."
         cp -af "${BACKUP_DIR}/latest"/*.json "${SB_CONF_DIR}/"
-        "${sb_bin}" restart >/dev/null 2>&1 || true
+        run_sb_cmd 10 restart >/dev/null 2>&1 || true
         info "已成功恢复轮换前的节点配置并重启 sing-box 服务"
         return 0
     else
@@ -540,7 +575,6 @@ send_tg_notify() {
 # API 签名与上报通信实现
 # ==============================================================================
 
-# 计算 HMAC-SHA256 签名: HMAC_SHA256("${timestamp}.${payload}", "${API_KEY}")
 compute_signature() {
     local timestamp="$1"
     local payload="$2"
@@ -553,7 +587,6 @@ compute_signature() {
     fi
 }
 
-# 发送 JSON 数据到管理面板（带指数退避重试）
 post_to_panel() {
     local payload="$1"
     local endpoint
@@ -601,7 +634,6 @@ post_to_panel() {
     done
 
     rm -f "${resp_file}"
-    # 保存失败载荷到本地缓存以便后续重试或排查
     printf '%s\n' "${payload}" > "${CACHE_DIR}/last_failed_payload.json"
     err "面板 API 同步在 ${max_retries} 次尝试后仍然失败，载荷已保存至 ${CACHE_DIR}/last_failed_payload.json"
     return 1
@@ -609,10 +641,6 @@ post_to_panel() {
 
 # ==============================================================================
 # 核心流程：密码/UUID 轮换与同步
-# 参数:
-#   --cron       定时任务触发（启用随机抖动延迟）
-#   --sync-only  仅获取当前链接并上传到面板，不修改密码/UUID
-#   --dry-run    演练模式：仅展示将要执行的命令与生成的 JSON，不实际改密
 # ==============================================================================
 
 run_rotation() {
@@ -637,14 +665,12 @@ run_rotation() {
         return 1
     fi
 
-    # 进程锁，防止并发执行
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
         warn "检测到另一个 sb-rotator 实例正在运行，本次任务跳过"
         return 1
     fi
 
-    # 若由 Cron 触发且设置了随机延迟，防止多台机器同一秒打爆面板
     if (( is_cron == 1 )) && [[ "${RANDOM_JITTER_MAX:-0}" =~ ^[0-9]+$ ]] && (( RANDOM_JITTER_MAX > 0 )); then
         local delay=$(( RANDOM % RANDOM_JITTER_MAX ))
         if (( delay > 0 )); then
@@ -653,8 +679,7 @@ run_rotation() {
         fi
     fi
 
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || {
+    find_sb_bin >/dev/null || {
         err "未找到 sing-box 管理命令，请确认已安装 233boy/sing-box"
         return 1
     }
@@ -694,7 +719,7 @@ run_rotation() {
             continue
         fi
 
-        # 1. 查询当前配置及协议类型 (`sing-box info [name]`)
+        # 1. 查询当前配置及协议类型
         local meta proto port rotate_type old_cred
         meta="$(inspect_node_info "${shortname}" "${fname}")"
         IFS='|' read -r proto port rotate_type old_cred <<< "${meta}"
@@ -706,38 +731,34 @@ run_rotation() {
             local cmd_out=""
             local cmd_rc=0
             if [[ "${rotate_type}" == "id" ]]; then
-                info "执行命令: sing-box id ${shortname} auto"
-                cmd_out="$(printf '\n' | "${sb_bin}" id "${shortname}" auto 2>&1 | strip_ansi)" || cmd_rc=$?
-                # 若某种特殊协议 id 失败，尝试 passwd 兜底
+                info "执行命令: sing-box id ${fname} auto"
+                cmd_out="$(run_sb_cmd 15 id "${fname}" auto)" || cmd_rc=$?
                 if (( cmd_rc != 0 )) || echo "${cmd_out}" | grep -Eqi '错误|error|不支持|invalid'; then
-                    warn "sing-box id 返回异常，尝试使用 sing-box passwd ${shortname} auto 兜底..."
-                    rotate_type="passwd"
-                    cmd_out="$(printf '\n' | "${sb_bin}" passwd "${shortname}" auto 2>&1 | strip_ansi)" || true
+                    warn "尝试使用短名称执行: sing-box id ${shortname} auto"
+                    cmd_out="$(run_sb_cmd 15 id "${shortname}" auto)" || true
                 fi
             else
-                info "执行命令: sing-box passwd ${shortname} auto"
-                cmd_out="$(printf '\n' | "${sb_bin}" passwd "${shortname}" auto 2>&1 | strip_ansi)" || cmd_rc=$?
-                # 若某种特殊协议 passwd 失败，尝试 id 兜底
+                info "执行命令: sing-box passwd ${fname} auto"
+                cmd_out="$(run_sb_cmd 15 passwd "${fname}" auto)" || cmd_rc=$?
                 if (( cmd_rc != 0 )) || echo "${cmd_out}" | grep -Eqi '错误|error|不支持|invalid'; then
-                    warn "sing-box passwd 返回异常，尝试使用 sing-box id ${shortname} auto 兜底..."
-                    rotate_type="id"
-                    cmd_out="$(printf '\n' | "${sb_bin}" id "${shortname}" auto 2>&1 | strip_ansi)" || true
+                    warn "尝试使用短名称执行: sing-box passwd ${shortname} auto"
+                    cmd_out="$(run_sb_cmd 15 passwd "${shortname}" auto)" || true
                 fi
             fi
         elif [[ "${mode}" == "dry_run" ]]; then
-            info "[演练模式] 将执行命令: sing-box ${rotate_type} ${shortname} auto"
+            info "[演练模式] 将执行命令: sing-box ${rotate_type} ${fname} auto"
         else
-            info "[仅同步模式] 不修改密码，直接读取节点 ${shortname} 当前链接"
+            info "[仅同步模式] 不修改密码，直接读取节点 ${fname} 当前链接"
         fi
 
         # 3. 重新读取最新配置与完整节点链接 (`sing-box info [name]` + `sing-box url [name]`)
         local new_meta new_proto new_port new_type new_cred node_url
         new_meta="$(inspect_node_info "${shortname}" "${fname}")"
         IFS='|' read -r new_proto new_port new_type new_cred <<< "${new_meta}"
-        node_url="$(get_node_url "${shortname}" "${new_proto}" "${new_port}" "${new_cred}")"
+        node_url="$(get_node_url "${shortname}" "${fname}" "${new_proto}" "${new_port}" "${new_cred}")"
 
         if [[ -z "${node_url}" ]]; then
-            err "无法获取节点 ${fname} 的完整链接 (sing-box url ${shortname} 输出为空)"
+            err "无法获取节点 ${fname} 的完整链接 (sing-box url ${fname} 输出为空)"
             if [[ "${mode}" == "rotate" && "${ROLLBACK_ON_FAIL}" == "true" ]]; then
                 rollback_configs
             fi
@@ -859,7 +880,6 @@ setup_cron() {
     local hour="${CRON_HOUR:-4}"
     local minute="${CRON_MINUTE:-0}"
 
-    # 计算当前系统时区与北京时间 (UTC+8) 的偏移，确保即使 cron 不支持 CRON_TZ 也能准时在 04:00 CST 触发
     local sys_offset_sec cst_offset_sec diff_hours local_hour
     sys_offset_sec="$(date +%z | awk '{
         sign = substr($0,1,1);
@@ -883,7 +903,6 @@ ${minute} ${local_hour} * * * root /usr/local/bin/sb-rotator --cron >> ${LOG_FIL
 EOF
     chmod 644 "${CRON_FILE}"
 
-    # 尝试重载 cron 服务
     systemctl reload cron 2>/dev/null || systemctl reload crond 2>/dev/null || service cron reload 2>/dev/null || service crond reload 2>/dev/null || true
     info "已部署定时任务: 每日北京时间 $(printf '%02d:%02d' "${hour}" "${minute}") (服务器本地时间 $(printf '%02d:%02d' "${local_hour}" "${minute}")) 自动执行"
 }
@@ -979,37 +998,38 @@ interactive_configure() {
     show_mapping_table || true
 
     echo ""
-    read -rp "1. 请输入订阅管理面板地址 (例如 https://panel.example.com 或完整 API 地址) [${PANEL_URL}]: " input_url
+    local input_url input_key input_ids input_hour input_min input_rb input_tg input_tk input_cid
+    prompt_read "1. 请输入订阅管理面板地址 (例如 https://panel.example.com 或完整 API 地址) [${PANEL_URL}]: " input_url || return 1
     PANEL_URL="${input_url:-${PANEL_URL}}"
 
-    read -rp "2. 请输入面板通信密码 / API Key [${API_KEY}]: " input_key
+    prompt_read "2. 请输入面板通信密码 / API Key [${API_KEY}]: " input_key || return 1
     API_KEY="${input_key:-${API_KEY}}"
 
     echo -e "\n${CYAN}提示: 多个节点 ID 请用英文逗号分隔，第 1 个对应配置中的 1)，第 2 个对应 2)，以此类推。"
     echo -e "      如果某个序号的节点不需要轮换，对应位置填 0 即可（例如: 101,0,103）。${NC}"
-    read -rp "3. 请输入面板节点 ID 列表 [${NODE_IDS}]: " input_ids
+    prompt_read "3. 请输入面板节点 ID 列表 [${NODE_IDS}]: " input_ids || return 1
     NODE_IDS="${input_ids:-${NODE_IDS}}"
     NODE_IDS="${NODE_IDS// /,}"
 
     echo ""
-    read -rp "4. 请输入每日自动修改密码的北京时间小时 (0-23，默认凌晨 4 点) [${CRON_HOUR:-4}]: " input_hour
+    prompt_read "4. 请输入每日自动修改密码的北京时间小时 (0-23，默认凌晨 4 点) [${CRON_HOUR:-4}]: " input_hour || return 1
     CRON_HOUR="${input_hour:-${CRON_HOUR:-4}}"
 
-    read -rp "5. 请输入每日自动修改密码的分钟 (0-59，默认 0 分) [${CRON_MINUTE:-0}]: " input_min
+    prompt_read "5. 请输入每日自动修改密码的分钟 (0-59，默认 0 分) [${CRON_MINUTE:-0}]: " input_min || return 1
     CRON_MINUTE="${input_min:-${CRON_MINUTE:-0}}"
 
-    read -rp "6. 面板同步失败时是否自动回滚原密码以防断连? (y/n，默认 y) [y]: " input_rb
+    prompt_read "6. 面板同步失败时是否自动回滚原密码以防断连? (y/n，默认 y) [y]: " input_rb || return 1
     if [[ "${input_rb:-y}" =~ ^[Nn]$ ]]; then
         ROLLBACK_ON_FAIL="false"
     else
         ROLLBACK_ON_FAIL="true"
     fi
 
-    read -rp "7. [可选] 是否配置 Telegram 机器人告警通知? (y/n，默认 n) [n]: " input_tg
+    prompt_read "7. [可选] 是否配置 Telegram 机器人告警通知? (y/n，默认 n) [n]: " input_tg || return 1
     if [[ "${input_tg:-n}" =~ ^[Yy]$ ]]; then
-        read -rp "   请输入 Telegram Bot Token [${TG_BOT_TOKEN}]: " input_tk
+        prompt_read "   请输入 Telegram Bot Token [${TG_BOT_TOKEN}]: " input_tk || return 1
         TG_BOT_TOKEN="${input_tk:-${TG_BOT_TOKEN}}"
-        read -rp "   请输入 Telegram Chat ID [${TG_CHAT_ID}]: " input_cid
+        prompt_read "   请输入 Telegram Chat ID [${TG_CHAT_ID}]: " input_cid || return 1
         TG_CHAT_ID="${input_cid:-${TG_CHAT_ID}}"
     fi
 
@@ -1028,7 +1048,8 @@ view_logs_menu() {
     echo "  3) 查看最近一次失败的 API 载荷"
     echo "  4) 清空历史日志"
     echo "  0) 返回主菜单"
-    read -rp "请选择操作 [0-4]: " log_opt
+    local log_opt=""
+    prompt_read "请选择操作 [0-4]: " log_opt || return 0
     case "${log_opt}" in
         1)
             echo -e "\n${BOLD}--- 最近 50 行日志 (${LOG_FILE}) ---${NC}"
@@ -1058,7 +1079,8 @@ view_logs_menu() {
 # 一键卸载
 uninstall_all() {
     echo -e "\n${RED}${BOLD}⚠️  警告：即将卸载 sb-rotator 自动轮换程序及其定时任务（不会影响 233boy sing-box 本身）${NC}"
-    read -rp "确认卸载吗？(输入 y 确认卸载，其他键取消): " confirm
+    local confirm=""
+    prompt_read "确认卸载吗？(输入 y 确认卸载，其他键取消): " confirm || return 0
     if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
         info "已取消卸载"
         return 0
@@ -1102,7 +1124,8 @@ main_menu() {
         echo -e "  ${RED}10.${NC} 一键卸载本程序 (Uninstall)"
         echo -e "  ${GREEN}0.${NC} 退出管理面板"
         echo -e "${BOLD}${CYAN}=================================================================${NC}"
-        read -rp "请输入选项编号 [0-10]: " choice
+        local choice=""
+        prompt_read "请输入选项编号 [0-10]: " choice || exit 0
 
         case "${choice}" in
             1) run_rotation ;;
@@ -1178,20 +1201,20 @@ main() {
     echo -e "${BOLD}   欢迎使用 233boy/sing-box 每日自动轮换密码 & 面板同步一键脚本${NC}"
     echo -e "${BOLD}${CYAN}=================================================================${NC}"
 
-    # 如果已经安装过，询问是进入管理面板、重新配置还是一键卸载
     if [[ -x "${INSTALL_BIN}" && -f "${INSTALL_DIR}/config.env" && "${1:-}" == "" ]]; then
         echo -e "${GREEN}检测到本机已安装 sb-rotator，请选择操作：${NC}"
-        echo -e "  ${GREEN}1)${NC} 打开管理面板 (含立即同步 / 查看日志 / 一键卸载按钮)"
-        echo -e "  ${GREEN}2)${NC} 更新脚本并重新引导配置"
+        echo -e "  ${GREEN}1)${NC} 更新核心脚本并打开管理面板 (含立即同步 / 查看日志 / 一键卸载按钮)"
+        echo -e "  ${GREEN}2)${NC} 更新核心脚本并重新引导配置"
         echo -e "  ${GREEN}3)${NC} 查看运行日志"
         echo -e "  ${RED}4)${NC} 一键卸载"
         echo -e "  ${GREEN}0)${NC} 退出"
-        read -rp "请选择 [0-4，默认 1]: " exist_opt
+        local exist_opt=""
+        prompt_read "请选择 [0-4，默认 1]: " exist_opt || exit 0
         case "${exist_opt:-1}" in
             1) deploy_core_script; exec "${INSTALL_BIN}" ;;
             2) ;;
-            3) exec "${INSTALL_BIN}" --logs ;;
-            4) exec "${INSTALL_BIN}" --uninstall ;;
+            3) deploy_core_script; exec "${INSTALL_BIN}" --logs ;;
+            4) deploy_core_script; exec "${INSTALL_BIN}" --uninstall ;;
             0) exit 0 ;;
         esac
     fi
@@ -1206,13 +1229,15 @@ main() {
     "${INSTALL_BIN}" --config
 
     echo ""
-    read -rp "是否现在测试一次面板 API 连通性？(y/n，默认 y): " do_ping
+    local do_ping=""
+    prompt_read "是否现在测试一次面板 API 连通性？(y/n，默认 y): " do_ping || true
     if [[ "${do_ping:-y}" =~ ^[Yy]$ ]]; then
         "${INSTALL_BIN}" --test-api || true
     fi
 
     echo ""
-    read -rp "是否立即执行一次【仅同步当前节点链接到面板（不改密）】以完成初始对接？(y/n，默认 y): " do_sync
+    local do_sync=""
+    prompt_read "是否立即执行一次【仅同步当前节点链接到面板（不改密）】以完成初始对接？(y/n，默认 y): " do_sync || true
     if [[ "${do_sync:-y}" =~ ^[Yy]$ ]]; then
         "${INSTALL_BIN}" --sync-only || true
     fi
