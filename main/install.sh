@@ -2,7 +2,7 @@
 # ==============================================================================
 # install.sh - 233boy/sing-box 每日自动换密与面板同步工具 一键安装/管理脚本
 # 使用方式:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/<你的用户名>/<你的仓库名>/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/cpb66666/zidonghuanmi/main/install.sh)
 # ==============================================================================
 
 set -e
