@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# install.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 一键安装脚本 (v2.0.0)
+# install.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 一键安装脚本 (v2.0.1)
 # 使用方式:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/cpb66666/zidonghuanmi/main/install.sh)
 # ==============================================================================
@@ -70,7 +70,7 @@ deploy_core_script() {
     cat > "${INSTALL_BIN}" <<'__EOF_SB_ROTATOR_CORE__'
 #!/usr/bin/env bash
 # ==============================================================================
-# sb-rotator.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 (v2.0.0)
+# sb-rotator.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 (v2.0.1)
 # 架构: 5组长效密码 (L:01~L:05, 15天到期, 每3天03:00轮换1组, 寿命阶梯 15/12/9/6/3天)
 #       + 1组短期密码 (D:00 / P24h, 24小时到期, 每天04:00轮换)
 # ==============================================================================
@@ -78,7 +78,7 @@ deploy_core_script() {
 set -o pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-VERSION="2.0.0"
+VERSION="2.0.1"
 INSTALL_DIR="${INSTALL_DIR:-/etc/sb-rotator}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.env}"
 STATE_FILE="${STATE_FILE:-${INSTALL_DIR}/slots_state.json}"
@@ -218,7 +218,7 @@ load_config() {
 save_config() {
     ensure_dirs
     cat > "${CONFIG_FILE}" <<EOF
-# sb-rotator v2.0.0 配置文件
+# sb-rotator v2.0.1 配置文件
 PANEL_URL="${PANEL_URL}"
 API_KEY="${API_KEY}"
 NODE_IDS="${NODE_IDS}"
@@ -561,8 +561,27 @@ update_node_slots_in_conf() {
 }
 
 reload_singbox_service() {
-    run_sb_cmd 10 fix-config.json >/dev/null 2>&1 || true
-    run_sb_cmd 10 restart >/dev/null 2>&1 || systemctl restart sing-box >/dev/null 2>&1 || true
+    # 注意: 严禁调用 sing-box fix-config.json！
+    # 因为 233boy 的 fix-config.json 会重建 /etc/sing-box/config.json 并清空用户已设置的 DNS (如 1.1.1.1)，导致节点无法解析域名。
+    # 同时直接调用 systemctl / rc-service 同步重启，避免 timeout 终止 233boy 脚本的后台重启子进程。
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl restart sing-box >/dev/null 2>&1 || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service sing-box restart >/dev/null 2>&1 || true
+    elif command -v service >/dev/null 2>&1; then
+        service sing-box restart >/dev/null 2>&1 || true
+    else
+        run_sb_cmd 10 restart >/dev/null 2>&1 || true
+    fi
+    sleep 1
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        if ! systemctl is-active --quiet sing-box; then
+            err "sing-box 服务重启后未处于运行状态，请检查配置！"
+            return 1
+        fi
+    fi
+    info "sing-box 服务已重启生效 (已完整保留 /etc/sing-box/config.json 中的 DNS 配置)"
+    return 0
 }
 
 # ==============================================================================
@@ -778,7 +797,10 @@ execute_workflow() {
 
     # 使最新槽位配置在 sing-box 中生效，以便提取链接与接受客户端连接
     if [[ "${task_type}" != "sync_only" && "${task_type}" != "dry_run" ]]; then
-        reload_singbox_service
+        if ! reload_singbox_service; then
+            [[ "${ROLLBACK_ON_FAIL}" == "true" ]] && rollback_configs
+            return 1
+        fi
     fi
 
     # 构建要上传的 JSON 数据 (首次上传全部 6 个槽位，后续仅上传本次变更的槽位)
@@ -944,7 +966,7 @@ setup_cron() {
     daily_local_h="$(calc_local_hour_from_beijing "${daily_bj_h}")"
 
     cat > "${CRON_FILE}" <<EOF
-# sb-rotator v2.0.0 定时任务
+# sb-rotator v2.0.1 定时任务
 # 1) 每日北京时间 $(printf '%02d:%02d' "${long_bj_h}" "${min}") 检查并轮换到期长效密码槽位 (每隔3天轮换1组，15天有效期)
 # 2) 每日北京时间 $(printf '%02d:%02d' "${daily_bj_h}" "${min}") 轮换短期24h密码槽位 (D:00 / P24h)
 SHELL=/bin/bash
@@ -1206,13 +1228,13 @@ __EOF_SB_ROTATOR_CORE__
 main() {
     check_root
     echo -e "\n${BOLD}${CYAN}=================================================================${NC}"
-    echo -e "${BOLD}   233boy/sing-box 多槽位阶梯自动换密 & 面板同步一键脚本 v2.0.0${NC}"
+    echo -e "${BOLD}   233boy/sing-box 多槽位阶梯自动换密 & 面板同步一键脚本 v2.0.1${NC}"
     echo -e "${BOLD}${CYAN}=================================================================${NC}"
 
     if [[ -x "${INSTALL_BIN}" && -f "${INSTALL_DIR}/config.env" && "${1:-}" == "" ]]; then
         echo -e "${GREEN}检测到本机已安装 sb-rotator，请选择操作：${NC}"
-        echo -e "  ${GREEN}1)${NC} 升级核心脚本至 v2.0.0 并立即执行首次 6 槽位全量初始化与上传"
-        echo -e "  ${GREEN}2)${NC} 升级核心脚本至 v2.0.0 并打开管理菜单"
+        echo -e "  ${GREEN}1)${NC} 升级核心脚本至 v2.0.1 并立即执行首次 6 槽位全量初始化与上传"
+        echo -e "  ${GREEN}2)${NC} 升级核心脚本至 v2.0.1 并打开管理菜单"
         echo -e "  ${GREEN}3)${NC} 重新引导配置"
         echo -e "  ${RED}4)${NC} 一键卸载"
         echo -e "  ${GREEN}0)${NC} 退出"
@@ -1238,7 +1260,7 @@ main() {
 
     check_dependencies
     deploy_core_script
-    echo -e "${GREEN}[成功] 核心程序 v2.0.0 已安装至 ${INSTALL_BIN} (快捷命令: sbr)${NC}"
+    echo -e "${GREEN}[成功] 核心程序 v2.0.1 已安装至 ${INSTALL_BIN} (快捷命令: sbr)${NC}"
 
     "${INSTALL_BIN}" --config
 
@@ -1250,7 +1272,7 @@ main() {
     fi
 
     echo -e "\n${BOLD}${GREEN}=================================================================${NC}"
-    echo -e "${BOLD}${GREEN} 🎉 v2.0.0 部署完成！随时输入 ${YELLOW}sbr${GREEN} 即可管理 6 槽位状态与日志${NC}"
+    echo -e "${BOLD}${GREEN} 🎉 v2.0.1 部署完成！随时输入 ${YELLOW}sbr${GREEN} 即可管理 6 槽位状态与日志${NC}"
     echo -e "${BOLD}${GREEN}=================================================================${NC}"
 }
 
