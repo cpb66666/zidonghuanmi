@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# install.sh - 233boy/sing-box 每日自动换密与面板同步工具 一键安装/管理脚本 (v1.2.2)
+# install.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 一键安装脚本 (v2.0.0)
 # 使用方式:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/cpb66666/zidonghuanmi/main/install.sh)
 # ==============================================================================
@@ -22,20 +22,15 @@ ALIAS_BIN="/usr/local/bin/sbr"
 INSTALL_DIR="/etc/sb-rotator"
 
 prompt_read() {
-    local prompt_str="$1"
-    local var_name="$2"
-    if [[ -t 0 ]]; then
-        read -rp "${prompt_str}" "${var_name}" || return 1
-    elif [[ -e /dev/tty ]]; then
-        read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
-    else
-        read -rp "${prompt_str}" "${var_name}" || return 1
-    fi
+    local prompt_str="$1" var_name="$2"
+    if [[ -t 0 ]]; then read -rp "${prompt_str}" "${var_name}" || return 1
+    elif [[ -e /dev/tty ]]; then read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
+    else read -rp "${prompt_str}" "${var_name}" || return 1; fi
 }
 
 check_root() {
     if [[ "$(id -u)" != "0" ]]; then
-        echo -e "${RED}[错误] 请使用 root 用户运行此一键脚本 (sudo -i)${NC}"
+        echo -e "${RED}[错误] 请使用 root 用户运行此脚本 (sudo -i)${NC}"
         exit 1
     fi
 }
@@ -43,70 +38,51 @@ check_root() {
 check_dependencies() {
     local missing=()
     for cmd in curl sed awk grep flock timeout jq; do
-        if ! command -v "${cmd}" >/dev/null 2>&1; then
-            missing+=("${cmd}")
-        fi
+        command -v "${cmd}" >/dev/null 2>&1 || missing+=("${cmd}")
     done
-
     if ! command -v crontab >/dev/null 2>&1 && [[ ! -d /etc/cron.d ]]; then
         missing+=("cron")
     fi
-
     if (( ${#missing[@]} > 0 )); then
         echo -e "${YELLOW}[提示] 正在安装必要系统组件: ${missing[*]} ...${NC}"
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl sed gawk grep util-linux coreutils cron openssl ca-certificates jq >/dev/null 2>&1
+            apt-get install -y curl sed gawk grep util-linux coreutils cron openssl ca-certificates jq tzdata >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
-            yum install -y curl sed gawk grep util-linux coreutils cronie openssl ca-certificates jq >/dev/null 2>&1
+            yum install -y curl sed gawk grep util-linux coreutils cronie openssl ca-certificates jq tzdata >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then
-            apk add --no-cache bash curl sed gawk grep util-linux coreutils dcron openssl ca-certificates jq >/dev/null 2>&1
+            apk add --no-cache bash curl sed gawk grep util-linux coreutils dcron openssl ca-certificates jq tzdata >/dev/null 2>&1
         fi
     fi
-
     systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || service cron start >/dev/null 2>&1 || true
-}
-
-check_singbox_installed() {
-    if ! command -v sing-box >/dev/null 2>&1 && ! command -v sb >/dev/null 2>&1 && [[ ! -d /etc/sing-box ]]; then
-        echo -e "${YELLOW}=================================================================${NC}"
-        echo -e "${YELLOW}[提示] 未检测到 233boy/sing-box 脚本环境 (/etc/sing-box)${NC}"
-        echo -e "是否现在为您自动调用 233boy 官方脚本安装 sing-box？"
-        local auto_sb=""
-        prompt_read "请输入 (y/n，默认 n 跳过): " auto_sb || true
-        if [[ "${auto_sb:-n}" =~ ^[Yy]$ ]]; then
-            bash <(wget -qO- -o- https://github.com/233boy/sing-box/raw/main/install.sh)
-        else
-            echo -e "${YELLOW}[提示] 将继续安装 sb-rotator，请稍后确保已安装 233boy/sing-box。${NC}"
-        fi
-    fi
 }
 
 deploy_core_script() {
     mkdir -p "${INSTALL_DIR}"
     if [[ -n "${GITHUB_RAW_BASE_URL}" ]]; then
-        echo -e "${CYAN}[INFO] 正在从远程源下载 sb-rotator.sh ...${NC}"
         if curl -fsSL --connect-timeout 10 "${GITHUB_RAW_BASE_URL%/}/sb-rotator.sh" -o "${INSTALL_BIN}"; then
             chmod +x "${INSTALL_BIN}"
             ln -sf "${INSTALL_BIN}" "${ALIAS_BIN}"
             return 0
         fi
-        echo -e "${YELLOW}[WARN] 远程拉取失败，自动切换为内置完整脚本部署...${NC}"
     fi
 
     cat > "${INSTALL_BIN}" <<'__EOF_SB_ROTATOR_CORE__'
 #!/usr/bin/env bash
 # ==============================================================================
-# sb-rotator.sh - 233boy/sing-box 每日自动密码/UUID轮换与面板API同步工具 (核心脚本)
-# 适配脚本: https://github.com/233boy/sing-box
+# sb-rotator.sh - 233boy/sing-box 多槽位阶梯换密与面板同步工具 (v2.0.0)
+# 架构: 5组长效密码 (L:01~L:05, 15天到期, 每3天03:00轮换1组, 寿命阶梯 15/12/9/6/3天)
+#       + 1组短期密码 (D:00 / P24h, 24小时到期, 每天04:00轮换)
 # ==============================================================================
 
 set -o pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-VERSION="1.2.2"
+VERSION="2.0.0"
 INSTALL_DIR="${INSTALL_DIR:-/etc/sb-rotator}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config.env}"
+STATE_FILE="${STATE_FILE:-${INSTALL_DIR}/slots_state.json}"
+INIT_FLAG="${INIT_FLAG:-${INSTALL_DIR}/.initialized}"
 BACKUP_DIR="${BACKUP_DIR:-${INSTALL_DIR}/backup}"
 CACHE_DIR="${CACHE_DIR:-${INSTALL_DIR}/cache}"
 LOG_FILE="${LOG_FILE:-/var/log/sb-rotator.log}"
@@ -114,7 +90,6 @@ LOCK_FILE="${LOCK_FILE:-/var/run/sb-rotator.lock}"
 CRON_FILE="${CRON_FILE:-/etc/cron.d/sb-rotator}"
 SB_CONF_DIR="${SB_CONF_DIR:-/etc/sing-box/conf}"
 
-# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -124,87 +99,80 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ==============================================================================
-# 基础工具与日志函数
+# 基础工具与跨时区时间计算 (统一锚定北京时间 Asia/Shanghai -> Unix Epoch 秒)
 # ==============================================================================
 
 ensure_dirs() {
     mkdir -p "${INSTALL_DIR}" "${BACKUP_DIR}" "${CACHE_DIR}" 2>/dev/null || true
     touch "${LOG_FILE}" 2>/dev/null || true
-    chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
+    [[ ! -f "${STATE_FILE}" ]] && echo "{}" > "${STATE_FILE}" 2>/dev/null || true
+    chmod 600 "${CONFIG_FILE}" "${STATE_FILE}" 2>/dev/null || true
 }
 
-now_beijing() {
-    TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S'
+now_beijing() { TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S'; }
+now_iso8601() { TZ='Asia/Shanghai' date '+%Y-%m-%dT%H:%M:%S+08:00'; }
+get_beijing_doy() { TZ='Asia/Shanghai' date '+%-j'; }
+
+# 计算从当前北京时间起 N 天后指定整点 (如 03:00:00 或 04:00:00) 的绝对 Unix 秒级时间戳
+# 无论节点服务器或面板服务器处于任何时区，Unix 时间戳全球唯一且一致
+calc_expire_ts() {
+    local days_ahead="$1"
+    local target_hour="$2"
+    local target_date
+    target_date="$(TZ='Asia/Shanghai' date -d "+${days_ahead} days" '+%Y-%m-%d')"
+    TZ='Asia/Shanghai' date -d "${target_date} $(printf '%02d:00:00' "${target_hour}")" '+%s'
 }
 
-now_iso8601() {
-    TZ='Asia/Shanghai' date '+%Y-%m-%dT%H:%M:%S+08:00'
+ts_to_iso8601_cst() {
+    local ts="$1"
+    TZ='Asia/Shanghai' date -d "@${ts}" '+%Y-%m-%dT%H:%M:%S+08:00'
+}
+
+# 根据自然年中的第几天 (DOY: 1~365) 计算今日应轮换的长效槽位编号 (1~5)
+get_due_long_slot_num() {
+    local doy
+    doy="$(get_beijing_doy)"
+    echo $(( (doy / 3) % 5 + 1 ))
+}
+
+# 判断今日是否为长效密码轮换日 (每隔 3 天轮换 1 组: DOY % 3 == 0)
+is_long_rotation_day() {
+    local doy
+    doy="$(get_beijing_doy)"
+    (( doy % 3 == 0 ))
 }
 
 log_msg() {
-    local level="$1"
-    shift
-    local msg="$*"
-    local ts
-    ts="$(now_beijing)"
-    echo "[${ts} CST] [${level}] ${msg}" >> "${LOG_FILE}" 2>/dev/null || true
+    local level="$1"; shift
+    echo "[$(now_beijing) CST] [${level}] $*" >> "${LOG_FILE}" 2>/dev/null || true
 }
 
-info()    { echo -e "${GREEN}[INFO]${NC} $*"; log_msg "INFO" "$*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; log_msg "WARN" "$*"; }
-err()     { echo -e "${RED}[ERROR]${NC} $*" >&2; log_msg "ERROR" "$*"; }
-step()    { echo -e "${CYAN}[STEP]${NC} $*"; log_msg "STEP" "$*"; }
+info() { echo -e "${GREEN}[INFO]${NC} $*"; log_msg "INFO" "$*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; log_msg "WARN" "$*"; }
+err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; log_msg "ERROR" "$*"; }
+step() { echo -e "${CYAN}[STEP]${NC} $*"; log_msg "STEP" "$*"; }
 
-# 安全读取终端输入（兼容 bash <(curl ...) 与管道执行，遇到 EOF 自动退出防止死循环）
 prompt_read() {
-    local prompt_str="$1"
-    local var_name="$2"
-    if [[ -t 0 ]]; then
-        read -rp "${prompt_str}" "${var_name}" || return 1
-    elif [[ -e /dev/tty ]]; then
-        read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
-    else
-        read -rp "${prompt_str}" "${var_name}" || return 1
-    fi
+    local prompt_str="$1" var_name="$2"
+    if [[ -t 0 ]]; then read -rp "${prompt_str}" "${var_name}" || return 1
+    elif [[ -e /dev/tty ]]; then read -rp "${prompt_str}" "${var_name}" < /dev/tty || return 1
+    else read -rp "${prompt_str}" "${var_name}" || return 1; fi
 }
 
-# 去除 233boy 脚本输出的 ANSI 颜色控制字符与回车符
-strip_ansi() {
-    sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'
-}
+strip_ansi() { sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' | tr -d '\r'; }
 
-# 查找 233boy sing-box 管理命令路径（优先使用 /usr/local/bin/sing-box）
 find_sb_bin() {
-    if [[ -n "${SB_BIN:-}" && -x "${SB_BIN}" ]]; then
-        echo "${SB_BIN}"
-        return 0
-    fi
-    local candidate
-    for candidate in /usr/local/bin/sing-box /usr/local/bin/sb /etc/sing-box/sh/sing-box.sh /usr/bin/sing-box /bin/sing-box; do
-        if [[ -x "${candidate}" ]]; then
-            echo "${candidate}"
-            return 0
-        fi
+    [[ -n "${SB_BIN:-}" && -x "${SB_BIN}" ]] && { echo "${SB_BIN}"; return 0; }
+    local c
+    for c in /usr/local/bin/sing-box /usr/local/bin/sb /etc/sing-box/sh/sing-box.sh /usr/bin/sing-box; do
+        [[ -x "$c" ]] && { echo "$c"; return 0; }
     done
-    if command -v sing-box >/dev/null 2>&1; then
-        command -v sing-box
-        return 0
-    fi
-    if command -v sb >/dev/null 2>&1; then
-        command -v sb
-        return 0
-    fi
-    return 1
+    command -v sing-box 2>/dev/null || command -v sb 2>/dev/null || return 1
 }
 
-# 安全调用 233boy sing-box 命令（支持注入指定节点序号 default_idx，防止落入交互菜单时选错或死循环）
 run_sb_cmd_idx() {
-    local default_idx="$1"
-    local timeout_sec="$2"
-    shift 2
-    local sb_bin
-    sb_bin="$(find_sb_bin)" || return 1
-
+    local default_idx="$1" timeout_sec="$2"; shift 2
+    local sb_bin; sb_bin="$(find_sb_bin)" || return 1
     if command -v timeout >/dev/null 2>&1; then
         printf '%s\n' "${default_idx}" | COLUMNS=1 timeout "${timeout_sec}" "${sb_bin}" "$@" 2>&1 | strip_ansi
     else
@@ -212,95 +180,56 @@ run_sb_cmd_idx() {
     fi
 }
 
-run_sb_cmd() {
-    local timeout_sec="$1"
-    shift
-    run_sb_cmd_idx "1" "${timeout_sec}" "$@"
-}
+run_sb_cmd() { local t="$1"; shift; run_sb_cmd_idx "1" "$t" "$@"; }
 
-# JSON 字符串安全转义
 json_escape() {
     local s="$1"
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"
-    s="${s//$'\r'/}"
-    s="${s//$'\t'/\\t}"
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"; s="${s//$'\t'/\\t}"
     printf '%s' "$s"
 }
 
-# 日志轮转（超过 5MB 自动截断保留最近 2000 行）
 rotate_log_if_needed() {
-    if [[ -f "${LOG_FILE}" ]]; then
-        local size
-        size=$(wc -c < "${LOG_FILE}" 2>/dev/null || echo 0)
-        if (( size > 5242880 )); then
-            tail -n 2000 "${LOG_FILE}" > "${LOG_FILE}.tmp" && mv -f "${LOG_FILE}.tmp" "${LOG_FILE}"
-            log_msg "INFO" "日志文件超过 5MB，已自动裁剪保留最新 2000 行"
-        fi
+    if [[ -f "${LOG_FILE}" ]] && (( $(wc -c < "${LOG_FILE}" 2>/dev/null || echo 0) > 5242880 )); then
+        tail -n 2000 "${LOG_FILE}" > "${LOG_FILE}.tmp" && mv -f "${LOG_FILE}.tmp" "${LOG_FILE}"
     fi
 }
 
 # ==============================================================================
-# 配置加载与保存
+# 配置管理
 # ==============================================================================
 
 load_config() {
     PANEL_URL=""
     API_KEY=""
     NODE_IDS=""
-    CRON_HOUR="4"
+    LONG_CRON_HOUR="3"
+    DAILY_CRON_HOUR="4"
     CRON_MINUTE="0"
-    SYNC_MODE="batch"
     MAX_RETRIES="3"
     RETRY_DELAY="5"
     RANDOM_JITTER_MAX="15"
     ROLLBACK_ON_FAIL="true"
+    CUSTOM_SERVER_NAME=""
     TG_BOT_TOKEN=""
     TG_CHAT_ID=""
-    CUSTOM_SERVER_NAME=""
-
-    if [[ -f "${CONFIG_FILE}" ]]; then
-        # shellcheck disable=SC1090
-        source "${CONFIG_FILE}"
-    fi
+    [[ -f "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
 }
 
 save_config() {
     ensure_dirs
     cat > "${CONFIG_FILE}" <<EOF
-# sb-rotator 配置文件 (自动生成，请勿泄露 API_KEY)
-# 订阅管理面板 API 地址 (支持填写基础域名或完整接口地址)
+# sb-rotator v2.0.0 配置文件
 PANEL_URL="${PANEL_URL}"
-
-# 面板通信密钥 (API Key / Communication Token)
 API_KEY="${API_KEY}"
-
-# 节点 ID 映射列表 (英文逗号分隔，按 sing-box info 序号 1,2,3... 依次对应；填 0 或 - 表示跳过该序号节点)
-# 也支持显式绑定格式: 101:AnyTLS-36542.json,102:Hysteria2-15642.json
 NODE_IDS="${NODE_IDS}"
-
-# 每日自动更换密码时间 (以北京时间 Asia/Shanghai 为准，默认凌晨 04:00)
-CRON_HOUR="${CRON_HOUR:-4}"
+LONG_CRON_HOUR="${LONG_CRON_HOUR:-3}"
+DAILY_CRON_HOUR="${DAILY_CRON_HOUR:-4}"
 CRON_MINUTE="${CRON_MINUTE:-0}"
-
-# API 同步模式: batch (单次请求批量推送全部节点) 或 single (逐个节点分别推送)
-SYNC_MODE="${SYNC_MODE:-batch}"
-
-# API 请求失败重试次数与间隔(秒)
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
-
-# 定时任务随机延迟上限(秒)，避免多台节点同一秒并发请求面板 (手动执行时不延迟)
 RANDOM_JITTER_MAX="${RANDOM_JITTER_MAX:-15}"
-
-# 当面板 API 同步最终失败时，是否自动回滚节点原密码/UUID配置 (true/false)
 ROLLBACK_ON_FAIL="${ROLLBACK_ON_FAIL:-true}"
-
-# 可选: 自定义服务器标识名称 (留空则使用 hostname)
 CUSTOM_SERVER_NAME="${CUSTOM_SERVER_NAME:-}"
-
-# 可选: Telegram 机器人告警通知配置
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 EOF
@@ -309,10 +238,7 @@ EOF
 
 get_endpoint_url() {
     local url="${PANEL_URL%/}"
-    if [[ -z "${url}" ]]; then
-        echo ""
-        return 1
-    fi
+    [[ -z "${url}" ]] && return 1
     if [[ "${url}" =~ ^https?://[^/]+$ ]]; then
         echo "${url}/api/v1/node/rotate"
     else
@@ -321,393 +247,326 @@ get_endpoint_url() {
 }
 
 # ==============================================================================
-# 节点自动发现与解析
+# 节点发现与协议适配
 # ==============================================================================
 
-# 发现所有节点配置，输出格式: "序号|配置文件名(含.json)|配置短名(不含.json)"
 discover_nodes() {
-    local fname shortname
-
-    # 1. 优先直接扫描 /etc/sing-box/conf/*.json（与 233boy 脚本内部生成 select 列表的源目录及排序完全一致）
     if [[ -d "${SB_CONF_DIR}" ]]; then
-        local i=1
-        local f
+        local i=1 f fname
         shopt -s nullglob
         for f in "${SB_CONF_DIR}"/*.json; do
             fname="$(basename "$f")"
-            shortname="${fname%.json}"
-            echo "${i}|${fname}|${shortname}"
+            echo "${i}|${fname}|${fname%.json}"
             ((i++))
         done
         shopt -u nullglob
-        if (( i > 1 )); then
-            return 0
-        fi
+        (( i > 1 )) && return 0
     fi
-
-    # 2. 兜底通过 `sing-box info` 提取菜单项
-    local raw_info
-    raw_info="$(run_sb_cmd 5 info)" || return 1
-
-    local found_numbered=0
-    local line idx
-    while IFS= read -r line; do
-        if [[ "${line}" =~ ^[[:space:]]*([0-9]+)\)[[:space:]]+([^[:space:]]+\.json)[[:space:]]*$ ]]; then
-            idx="${BASH_REMATCH[1]}"
-            fname="${BASH_REMATCH[2]}"
-            shortname="${fname%.json}"
-            echo "${idx}|${fname}|${shortname}"
-            found_numbered=1
-        fi
-    done <<< "$(echo "${raw_info}" | grep -Eo '[0-9]+\)[[:space:]]+[^[:space:]]+\.json' | sort -n)"
-
-    (( found_numbered == 1 )) && return 0
     return 1
 }
 
-# 解析某个节点的面板 Node ID
 resolve_panel_node_id() {
-    local target_idx="$1"
-    local target_fname="$2"
+    local target_idx="$1" target_fname="$2"
     local target_short="${target_fname%.json}"
-
-    local IFS=','
+    local IFS=',' item k v
     read -ra items <<< "${NODE_IDS// /,}"
-
-    local item k v
     for item in "${items[@]}"; do
         if [[ "${item}" == *:* ]]; then
-            k="${item%%:*}"
-            v="${item#*:}"
-            if [[ "${v}" == "${target_fname}" || "${v}" == "${target_short}" ]]; then
-                echo "${k}"
-                return 0
-            fi
+            k="${item%%:*}"; v="${item#*:}"
+            [[ "${v}" == "${target_fname}" || "${v}" == "${target_short}" ]] && { echo "${k}"; return 0; }
         fi
     done
-
     local pos=$(( target_idx - 1 ))
     if (( pos >= 0 && pos < ${#items[@]} )); then
-        local val="${items[$pos]}"
-        val="${val%%:*}"
-        if [[ -n "${val}" && "${val}" != "0" && "${val}" != "-" ]]; then
-            echo "${val}"
-            return 0
-        fi
+        local val="${items[$pos]%%:*}"
+        [[ -n "${val}" && "${val}" != "0" && "${val}" != "-" ]] && { echo "${val}"; return 0; }
     fi
-
-    echo ""
     return 1
 }
 
-# 直接从配置文件读取当前 UUID 或 Password
-read_cred_from_conf() {
-    local conf_path="$1"
-    [[ ! -f "${conf_path}" ]] && return 1
-    local cred=""
-    if command -v jq >/dev/null 2>&1; then
-        cred="$(jq -r '.. | objects | (.uuid // .password // empty)' "${conf_path}" 2>/dev/null | head -n1)"
-    fi
-    if [[ -z "${cred}" ]]; then
-        cred="$(grep -Eo '"(uuid|password)"[[:space:]]*:[[:space:]]*"[^"]+"' "${conf_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
-    fi
-    echo "${cred}"
-}
-
-# 查询节点详情并判断协议与凭据类型
-# 返回格式: protocol|port|rotate_cmd_type|current_credential
-inspect_node_info() {
-    local shortname="$1"
-    local fname="$2"
-    local idx="${3:-1}"
+# 识别节点协议、端口、凭据字段名 (uuid 或 password)
+inspect_node_meta() {
+    local shortname="$1" fname="$2"
     local conf_path="${SB_CONF_DIR}/${fname}"
+    local proto="" port="" cred_field=""
 
-    local proto=""
-    local port=""
-    local rotate_type=""
-    local cred=""
-
-    # 1. 优先从本地 JSON 配置文件读取（毫秒级响应，100% 准确）
     if [[ -f "${conf_path}" ]]; then
-        if command -v jq >/dev/null 2>&1; then
-            proto="$(jq -r '.inbounds[0].type // empty' "${conf_path}" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-            port="$(jq -r '.inbounds[0].listen_port // empty' "${conf_path}" 2>/dev/null)"
-        fi
-        [[ -z "${proto}" ]] && proto="$(grep -Eo '"type"[[:space:]]*:[[:space:]]*"[^"]+"' "${conf_path}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/' | tr '[:upper:]' '[:lower:]')"
-        [[ -z "${port}" ]] && port="$(grep -Eo '"listen_port"[[:space:]]*:[[:space:]]*[0-9]+' "${conf_path}" 2>/dev/null | head -n1 | grep -Eo '[0-9]+')"
-
-        if grep -q '"uuid"' "${conf_path}" 2>/dev/null; then
-            rotate_type="id"
-        elif grep -q '"password"' "${conf_path}" 2>/dev/null; then
-            rotate_type="passwd"
-        fi
-        cred="$(read_cred_from_conf "${conf_path}")"
-    fi
-
-    # 2. 若本地 JSON 未提取到凭据，调用 `sing-box info <shortname>`（注意：不带 .json 后缀！）
-    if [[ -z "${proto}" || -z "${port}" || -z "${rotate_type}" || -z "${cred}" ]]; then
-        local info_out
-        info_out="$(run_sb_cmd_idx "${idx}" 5 info "${shortname}")"
-        if [[ -z "${proto}" ]]; then
-            proto="$(echo "${info_out}" | awk -F'[=:]' '/协议|\(protocol\)/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print tolower($2); exit}')"
-        fi
-        if [[ -z "${port}" ]]; then
-            port="$(echo "${info_out}" | awk -F'[=:]' '/端口|\(port\)/ {gsub(/[^0-9]/, "", $2); if ($2 != "") {print $2; exit}}')"
-        fi
-        if [[ -z "${rotate_type}" ]]; then
-            if echo "${info_out}" | grep -Eqi '用户ID|\(id\)|uuid'; then
-                rotate_type="id"
-            elif echo "${info_out}" | grep -Eqi '密码|\(password\)|passwd'; then
-                rotate_type="passwd"
-            fi
-        fi
-        if [[ -z "${cred}" ]]; then
-            if [[ "${rotate_type}" == "id" ]]; then
-                cred="$(echo "${info_out}" | awk -F'[=:]' '/用户ID|\(id\)|uuid/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-            else
-                cred="$(echo "${info_out}" | awk -F'[=:]' '/密码|\(password\)|passwd/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
-            fi
+        proto="$(jq -r '.inbounds[0].type // empty' "${conf_path}" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+        port="$(jq -r '.inbounds[0].listen_port // empty' "${conf_path}" 2>/dev/null)"
+        if jq -e '.inbounds[0].users[0].uuid != null' "${conf_path}" >/dev/null 2>&1 || grep -q '"uuid"' "${conf_path}" 2>/dev/null; then
+            cred_field="uuid"
+        else
+            cred_field="password"
         fi
     fi
 
-    # 3. 兜底从配置文件名推断
-    if [[ -z "${proto}" ]]; then
-        proto="$(echo "${shortname}" | sed -E 's/-[0-9]+$//' | tr '[:upper:]' '[:lower:]')"
-    fi
-    if [[ -z "${port}" && "${shortname}" =~ -([0-9]+)$ ]]; then
-        port="${BASH_REMATCH[1]}"
-    fi
+    [[ -z "${proto}" ]] && proto="$(echo "${shortname}" | sed -E 's/-[0-9]+$//' | tr '[:upper:]' '[:lower:]')"
+    [[ -z "${port}" && "${shortname}" =~ -([0-9]+)$ ]] && port="${BASH_REMATCH[1]}"
     [[ -z "${port}" ]] && port="0"
 
-    if [[ -z "${rotate_type}" ]]; then
+    if [[ -z "${cred_field}" ]]; then
         case "${proto}" in
-            *vless*|*vmess*|*tuic*)
-                rotate_type="id"
-                ;;
-            *)
-                rotate_type="passwd"
-                ;;
+            *vless*|*vmess*|*tuic*) cred_field="uuid" ;;
+            *) cred_field="password" ;;
         esac
     fi
-
-    echo "${proto}|${port}|${rotate_type}|${cred}"
+    echo "${proto}|${port}|${cred_field}"
 }
 
-# 生成新的 UUID 或随机密码（用于当 233boy CLI 未能修改某协议配置时的内置兼容引擎）
 generate_new_credential() {
-    local rotate_type="$1"
-    local conf_path="$2"
-
-    if [[ "${rotate_type}" == "id" ]]; then
-        local uuid=""
-        uuid="$(run_sb_cmd 3 bin generate uuid 2>/dev/null | grep -Eo '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}' | head -n1)"
-        if [[ -z "${uuid}" && -r /proc/sys/kernel/random/uuid ]]; then
-            uuid="$(cat /proc/sys/kernel/random/uuid)"
+    local cred_field="$1" conf_path="$2"
+    if [[ "${cred_field}" == "uuid" ]]; then
+        if [[ -r /proc/sys/kernel/random/uuid ]]; then
+            cat /proc/sys/kernel/random/uuid
+        elif command -v uuidgen >/dev/null 2>&1; then
+            uuidgen | tr '[:upper:]' '[:lower:]'
+        else
+            od -x /dev/urandom | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}'
         fi
-        if [[ -z "${uuid}" ]] && command -v uuidgen >/dev/null 2>&1; then
-            uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-        fi
-        if [[ -z "${uuid}" ]]; then
-            uuid="$(od -x /dev/urandom | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}')"
-        fi
-        echo "${uuid}"
     else
-        # 检查是否为 Shadowsocks 2022 密钥格式
         if [[ -f "${conf_path}" ]] && grep -qi '2022-blake3' "${conf_path}" 2>/dev/null; then
-            local ss2022_pass=""
-            ss2022_pass="$(run_sb_cmd 3 ss2022 2>/dev/null | grep -Eo '[A-Za-z0-9+/=]{16,}' | tail -n1)"
-            if [[ -n "${ss2022_pass}" ]]; then
-                echo "${ss2022_pass}"
-                return 0
-            fi
+            local ss_pass
+            ss_pass="$(run_sb_cmd 3 ss2022 2>/dev/null | grep -Eo '[A-Za-z0-9+/=]{16,}' | tail -n1)"
+            [[ -n "${ss_pass}" ]] && { echo "${ss_pass}"; return 0; }
         fi
-        # 生成高强度 16 位随机字母数字密码（与 233boy 默认风格一致）
-        local pass=""
+        local pass
         pass="$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16)"
         [[ -z "${pass}" ]] && pass="$(date +%s%N | sha256sum | head -c 16)"
         echo "${pass}"
     fi
 }
 
-# 直接更新 /etc/sing-box/conf/${fname} 中的凭据并通过 233boy 的 fix-config.json & restart 生效
-direct_update_conf_credential() {
-    local fname="$1"
-    local rotate_type="$2"
-    local old_cred="$3"
-    local conf_path="${SB_CONF_DIR}/${fname}"
-
-    [[ ! -f "${conf_path}" ]] && return 1
-
-    local new_cred
-    new_cred="$(generate_new_credential "${rotate_type}" "${conf_path}")"
-    [[ -z "${new_cred}" || "${new_cred}" == "${old_cred}" ]] && return 1
-
-    local tmp_conf="${conf_path}.tmp.$$"
-    local updated=0
-
-    if command -v jq >/dev/null 2>&1; then
-        if [[ "${rotate_type}" == "id" ]]; then
-            if jq --arg v "${new_cred}" '(.. | objects | select(has("uuid"))).uuid = $v' "${conf_path}" > "${tmp_conf}" 2>/dev/null && [[ -s "${tmp_conf}" ]]; then
-                mv -f "${tmp_conf}" "${conf_path}"
-                updated=1
-            fi
-        else
-            if jq --arg v "${new_cred}" '(.. | objects | select(has("password"))).password = $v' "${conf_path}" > "${tmp_conf}" 2>/dev/null && [[ -s "${tmp_conf}" ]]; then
-                mv -f "${tmp_conf}" "${conf_path}"
-                updated=1
-            fi
-        fi
-    fi
-    rm -f "${tmp_conf}" 2>/dev/null || true
-
-    if (( updated == 0 )); then
-        if [[ -n "${old_cred}" ]]; then
-            sed -i "s|\"${old_cred}\"|\"${new_cred}\"|g" "${conf_path}"
-        elif [[ "${rotate_type}" == "id" ]]; then
-            sed -i -E "s|(\"uuid\"[[:space:]]*:[[:space:]]*\")[^\"]+(\")|\1${new_cred}\2|g" "${conf_path}"
-        else
-            sed -i -E "s|(\"password\"[[:space:]]*:[[:space:]]*\")[^\"]+(\")|\1${new_cred}\2|g" "${conf_path}"
-        fi
-    fi
-
-    # 调用 233boy 原生 fix-config.json 重新合并生成 /etc/sing-box/config.json 并重启服务
-    run_sb_cmd 10 fix-config.json >/dev/null 2>&1 || true
-    run_sb_cmd 10 restart >/dev/null 2>&1 || systemctl restart sing-box >/dev/null 2>&1 || true
-    return 0
+get_server_ip() {
+    local ip=""
+    ip="$(run_sb_cmd 5 ip 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
+    [[ -z "${ip}" ]] && ip="$(curl -fsSL4 --connect-timeout 4 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -z "${ip}" ]] && ip="127.0.0.1"
+    echo "${ip}"
 }
 
-# 执行单节点密码/UUID 轮换，并严格校验配置文件中的凭据是否真正发生改变
-rotate_single_node_credential() {
-    local idx="$1"
-    local shortname="$2"
-    local fname="$3"
-    local port="$4"
-    local rotate_type="$5"
-    local old_cred="$6"
-    local conf_path="${SB_CONF_DIR}/${fname}"
-
-    local cur_cred=""
-
-    # 尝试 1: 优先使用不带 .json 的配置短名调用 `sing-box id/passwd <shortname> auto` (注入实际序号 idx)
-    info "执行命令: sing-box ${rotate_type} ${shortname} auto"
-    run_sb_cmd_idx "${idx}" 15 "${rotate_type}" "${shortname}" auto >/dev/null 2>&1 || true
-    cur_cred="$(read_cred_from_conf "${conf_path}")"
-    if [[ -n "${cur_cred}" && "${cur_cred}" != "${old_cred}" ]]; then
-        return 0
-    fi
-
-    # 尝试 2: 使用端口号匹配 `sing-box id/passwd <port> auto` (233boy 官方推荐匹配方式)
-    if [[ -n "${port}" && "${port}" != "0" ]]; then
-        info "尝试按端口号匹配执行: sing-box ${rotate_type} ${port} auto"
-        run_sb_cmd_idx "${idx}" 15 "${rotate_type}" "${port}" auto >/dev/null 2>&1 || true
-        cur_cred="$(read_cred_from_conf "${conf_path}")"
-        if [[ -n "${cur_cred}" && "${cur_cred}" != "${old_cred}" ]]; then
-            return 0
-        fi
-    fi
-
-    # 尝试 3: 使用 `sing-box change <shortname> id/passwd auto`
-    info "尝试通过 change 子命令执行: sing-box change ${shortname} ${rotate_type} auto"
-    run_sb_cmd_idx "${idx}" 15 change "${shortname}" "${rotate_type}" auto >/dev/null 2>&1 || true
-    cur_cred="$(read_cred_from_conf "${conf_path}")"
-    if [[ -n "${cur_cred}" && "${cur_cred}" != "${old_cred}" ]]; then
-        return 0
-    fi
-
-    # 尝试 4: 若该协议（例如新版 AnyTLS）在 233boy CLI 下未自动更新凭据，直接修改配置并调用 fix-config.json + restart
-    warn "233boy 命令未变更 [${fname}] 凭据，启用内置兼容引擎更新配置并重载 sing-box..."
-    if direct_update_conf_credential "${fname}" "${rotate_type}" "${old_cred}"; then
-        cur_cred="$(read_cred_from_conf "${conf_path}")"
-        if [[ -n "${cur_cred}" && "${cur_cred}" != "${old_cred}" ]]; then
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-# 从文本输出中纯粹提取代理节点链接（剔除 http/https 及 233boy 的 getjms.com 广告链接）
 extract_proxy_url_from_text() {
-    local text="$1"
-    echo "${text}" \
+    echo "$1" \
         | grep -Eo '(vless|vmess|trojan|hysteria2|hy2|tuic|ss|shadowsocks|anytls|socks5?|hysteria)://[^[:space:]"'"'"']+' \
         | grep -Ev 'getjms\.com|233boy\.com|github\.com|t\.me' \
         | head -n1
 }
 
-# 调用 `sing-box url [name]` 获取完整节点链接
-get_node_url() {
-    local idx="$1"
-    local shortname="$2"
-    local fname="$3"
-    local proto="$4"
-    local port="$5"
-    local cred="$6"
-    local old_cred="${7:-}"
+# 获取节点的基准分享链接模板 (以 users[0] 为基准)，用于派发各槽位完整链接
+get_base_node_url() {
+    local idx="$1" shortname="$2" fname="$3" proto="$4" port="$5" first_cred="$6"
+    local out="" base_url=""
 
-    local out=""
-    local node_url=""
+    out="$(run_sb_cmd_idx "${idx}" 6 url "${shortname}" 2>/dev/null)"
+    base_url="$(extract_proxy_url_from_text "${out}")"
 
-    # 1. 优先使用不带 .json 的 shortname 调用 `sing-box url <shortname>`
-    out="$(run_sb_cmd_idx "${idx}" 8 url "${shortname}")"
-    node_url="$(extract_proxy_url_from_text "${out}")"
-
-    # 2. 若为空，尝试按端口号调用 `sing-box url <port>`
-    if [[ -z "${node_url}" && -n "${port}" && "${port}" != "0" ]]; then
-        out="$(run_sb_cmd_idx "${idx}" 8 url "${port}")"
-        node_url="$(extract_proxy_url_from_text "${out}")"
+    if [[ -z "${base_url}" && -n "${port}" && "${port}" != "0" ]]; then
+        out="$(run_sb_cmd_idx "${idx}" 6 url "${port}" 2>/dev/null)"
+        base_url="$(extract_proxy_url_from_text "${out}")"
     fi
 
-    # 3. 若仍为空，尝试从 `sing-box info <shortname>` 输出中提取
-    if [[ -z "${node_url}" ]]; then
-        out="$(run_sb_cmd_idx "${idx}" 8 info "${shortname}")"
-        node_url="$(extract_proxy_url_from_text "${out}")"
+    if [[ -z "${base_url}" ]]; then
+        out="$(run_sb_cmd_idx "${idx}" 6 info "${shortname}" 2>/dev/null)"
+        base_url="$(extract_proxy_url_from_text "${out}")"
     fi
 
-    # 4. 针对部分版本 AnyTLS 等协议若 `sing-box url` 未输出标准链接的智能拼装兜底
-    if [[ -z "${node_url}" && -n "${cred}" ]]; then
-        local server_ip sni=""
-        server_ip="$(get_server_ip)"
-        if [[ -f "${SB_CONF_DIR}/${fname}" ]]; then
-            sni="$(grep -Eo '"server_name"[[:space:]]*:[[:space:]]*"[^"]+"' "${SB_CONF_DIR}/${fname}" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
+    # 智能兜底构造完整节点链接
+    if [[ -z "${base_url}" ]]; then
+        local srv_ip sni="" pbk="" sid="" flow=""
+        srv_ip="$(get_server_ip)"
+        local conf_path="${SB_CONF_DIR}/${fname}"
+        if [[ -f "${conf_path}" ]]; then
+            sni="$(jq -r '.inbounds[0].tls.server_name // empty' "${conf_path}" 2>/dev/null)"
+            flow="$(jq -r '.inbounds[0].users[0].flow // empty' "${conf_path}" 2>/dev/null)"
+            sid="$(jq -r '.inbounds[0].tls.reality.short_id[0] // empty' "${conf_path}" 2>/dev/null)"
         fi
         case "${proto}" in
             *anytls*)
-                if [[ -n "${sni}" ]]; then
-                    node_url="anytls://${cred}@${server_ip}:${port}?security=tls&sni=${sni}&insecure=1#${shortname}"
-                else
-                    node_url="anytls://${cred}@${server_ip}:${port}?insecure=1#${shortname}"
-                fi
+                base_url="anytls://${first_cred}@${srv_ip}:${port}?security=tls${sni:+&sni=${sni}}&insecure=1#${shortname}"
                 ;;
             *hysteria2*|*hy2*)
-                node_url="hysteria2://${cred}@${server_ip}:${port}?insecure=1&sni=${sni:-www.bing.com}#${shortname}"
+                base_url="hysteria2://${first_cred}@${srv_ip}:${port}?insecure=1&sni=${sni:-www.bing.com}#${shortname}"
+                ;;
+            *vless*)
+                base_url="vless://${first_cred}@${srv_ip}:${port}?encryption=none${flow:+&flow=${flow}}&security=tls${sni:+&sni=${sni}}#${shortname}"
+                ;;
+            *trojan*)
+                base_url="trojan://${first_cred}@${srv_ip}:${port}?security=tls${sni:+&sni=${sni}}#${shortname}"
+                ;;
+            *)
+                base_url="${proto}://${first_cred}@${srv_ip}:${port}#${shortname}"
                 ;;
         esac
     fi
+    echo "${base_url}"
+}
 
-    # 5. 确保提取出的链接中包含的是最新更换后的凭据（如果包含旧凭据则自动替换为新凭据）
-    if [[ -n "${node_url}" && -n "${old_cred}" && -n "${cred}" && "${old_cred}" != "${cred}" ]]; then
-        if [[ "${node_url}" == *"${old_cred}"* ]]; then
-            node_url="${node_url//${old_cred}/${cred}}"
+# 将基准节点链接转换为指定槽位凭据与标识的完整节点链接
+build_slot_node_url() {
+    local base_url="$1" first_cred="$2" slot_cred="$3" slot_id="$4" proto="$5"
+    local url="${base_url}"
+
+    if [[ "${proto}" == *vmess* && "${url}" =~ ^vmess://(.+)$ ]]; then
+        local b64="${BASH_REMATCH[1]}"
+        local decoded
+        decoded="$(echo "${b64}" | base64 -d 2>/dev/null || true)"
+        if [[ -n "${decoded}" ]] && command -v jq >/dev/null 2>&1; then
+            local modified
+            modified="$(echo "${decoded}" | jq -c --arg id "${slot_cred}" --arg ps "${slot_id}" '.id = $id | .ps = $ps' 2>/dev/null || true)"
+            if [[ -n "${modified}" ]]; then
+                echo "vmess://$(printf '%s' "${modified}" | base64 -w 0 2>/dev/null || printf '%s' "${modified}" | base64 | tr -d '\n')"
+                return 0
+            fi
         fi
     fi
 
-    echo "${node_url}"
-}
-
-# 获取本机公网 IP（优先使用 `sing-box ip`）
-get_server_ip() {
-    local ip=""
-    ip="$(run_sb_cmd 5 ip | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
-    if [[ -z "${ip}" ]]; then
-        ip="$(curl -fsSL4 --connect-timeout 4 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+    # 替换协议头后的凭据部分
+    if [[ -n "${first_cred}" && "${url}" == *"${first_cred}"* ]]; then
+        url="${url//${first_cred}/${slot_cred}}"
+    else
+        url="$(echo "${url}" | sed -E "s|^([a-zA-Z0-9]+://)[^@]+@|\1${slot_cred}@|")"
     fi
-    [[ -z "${ip}" ]] && ip="127.0.0.1"
-    echo "${ip}"
+
+    # 在链接末尾锚点 # 标注槽位标识 (如 #AnyTLS-36542|6:L:01)
+    if [[ "${url}" == *#* ]]; then
+        local prefix="${url%%#*}"
+        url="${prefix}#${slot_id}"
+    else
+        url="${url}#${slot_id}"
+    fi
+    echo "${url}"
 }
 
 # ==============================================================================
-# 备份与回滚机制
+# 多槽位配置维护 (5个长效 L:01~L:05 + 1个短期 D:00)
+# ==============================================================================
+
+# 读取或更新本地状态文件中的过期时间
+get_slot_expire_from_state() {
+    local slot_id="$1"
+    jq -r --arg k "${slot_id}" '.[$k].expires_at // 0' "${STATE_FILE}" 2>/dev/null || echo 0
+}
+
+set_slot_state() {
+    local slot_id="$1" cred="$2" exp_ts="$3" slot_tag="$4" slot_type="$5"
+    local exp_iso
+    exp_iso="$(ts_to_iso8601_cst "${exp_ts}")"
+    local tmp="${STATE_FILE}.tmp.$$"
+    jq --arg k "${slot_id}" \
+       --arg c "${cred}" \
+       --arg tag "${slot_tag}" \
+       --arg st "${slot_type}" \
+       --arg iso "${exp_iso}" \
+       --argjson exp "${exp_ts}" \
+       '.[$k] = {"credential": $c, "expires_at": $exp, "expires_at_iso": $iso, "slot_tag": $tag, "slot_type": $st}' \
+       "${STATE_FILE}" > "${tmp}" 2>/dev/null && mv -f "${tmp}" "${STATE_FILE}"
+}
+
+# 确保节点的 sing-box 配置文件中包含完整的 6 个槽位用户并带有 name 标注
+# 参数: fname panel_node_id cred_field action_mode target_slot_key
+# action_mode:
+#   "init"       -> 重新初始化全部 6 个槽位 (L:01~L:05 阶梯寿命 {15,12,9,6,3}天 + D:00 24h)
+#   "rotate_one" -> 仅更换指定的 target_slot_key (如 "L:01" 或 "D:00")，其余 5 个槽位保持不变
+#   "ensure"     -> 若配置文件还不是 6 槽位结构则补齐，不重置已有槽位
+update_node_slots_in_conf() {
+    local fname="$1"
+    local panel_id="$2"
+    local cred_field="$3"
+    local action_mode="$4"
+    local target_slot_key="${5:-}"
+    local conf_path="${SB_CONF_DIR}/${fname}"
+
+    [[ ! -f "${conf_path}" ]] && return 1
+
+    # 提取原模板用户中的附加属性 (例如 VLESS Reality 的 flow: xtls-rprx-vision)
+    local extra_fields_json="{}"
+    extra_fields_json="$(jq -c '(.inbounds[0].users[0] // {}) | del(.name, .uuid, .password)' "${conf_path}" 2>/dev/null || echo "{}")"
+
+    local due_num
+    due_num="$(get_due_long_slot_num)"
+    local long_hour="${LONG_CRON_HOUR:-3}"
+    local daily_hour="${DAILY_CRON_HOUR:-4}"
+
+    local slot_keys=("L:01" "L:02" "L:03" "L:04" "L:05" "D:00")
+    local users_json="[]"
+    local sk s_num slot_id slot_tag slot_type cur_cred new_cred exp_ts days_left steps_ahead
+
+    for sk in "${slot_keys[@]}"; do
+        slot_id="${panel_id}:${sk}"
+        if [[ "${sk}" == "D:00" ]]; then
+            slot_tag="P24h"
+            slot_type="daily"
+        else
+            s_num="${sk#L:0}"
+            slot_tag="P_0${s_num}"
+            slot_type="long"
+        fi
+
+        # 从当前 sing-box 配置文件按 name 查找该槽位的现有凭据
+        cur_cred="$(jq -r --arg name "${slot_id}" --arg cf "${cred_field}" '
+            .inbounds[0].users[]? | select(.name == $name) | .[$cf] // empty
+        ' "${conf_path}" 2>/dev/null | head -n1)"
+
+        exp_ts="$(get_slot_expire_from_state "${slot_id}")"
+
+        local need_new=0
+        if [[ "${action_mode}" == "init" ]]; then
+            need_new=1
+        elif [[ "${action_mode}" == "rotate_one" && "${sk}" == "${target_slot_key}" ]]; then
+            need_new=1
+        elif [[ -z "${cur_cred}" || "${exp_ts}" == "0" ]]; then
+            need_new=1
+        fi
+
+        if (( need_new == 1 )); then
+            new_cred="$(generate_new_credential "${cred_field}" "${conf_path}")"
+            if [[ "${sk}" == "D:00" ]]; then
+                # 短期密码：次日凌晨 04:00 到期 (24小时)
+                exp_ts="$(calc_expire_ts 1 "${daily_hour}")"
+            else
+                if [[ "${action_mode}" == "init" || "${exp_ts}" == "0" ]]; then
+                    # 初始构建 5 组长效密码的阶梯剩余寿命 {15, 12, 9, 6, 3} 天，严格对齐 DOY 轮换周期
+                    steps_ahead=$(( (s_num - due_num + 5) % 5 ))
+                    if (( steps_ahead == 0 )); then
+                        days_left=15
+                    else
+                        days_left=$(( steps_ahead * 3 ))
+                    fi
+                    exp_ts="$(calc_expire_ts "${days_left}" "${long_hour}")"
+                else
+                    # 常规轮换：从当前轮换日起 15 天后的凌晨 03:00 到期
+                    exp_ts="$(calc_expire_ts 15 "${long_hour}")"
+                fi
+            fi
+            cur_cred="${new_cred}"
+            set_slot_state "${slot_id}" "${cur_cred}" "${exp_ts}" "${slot_tag}" "${slot_type}"
+        fi
+
+        # 组装 sing-box user 对象（保留 flow 等协议专属字段，写入 name 标注与对应凭据）
+        users_json="$(jq -c \
+            --argjson arr "${users_json}" \
+            --argjson extra "${extra_fields_json}" \
+            --arg name "${slot_id}" \
+            --arg cf "${cred_field}" \
+            --arg val "${cur_cred}" \
+            '$arr + [($extra + {"name": $name, ($cf): $val})]' <<< "{}")"
+    done
+
+    local tmp_conf="${conf_path}.tmp.$$"
+    if jq --argjson u "${users_json}" '.inbounds[0].users = $u' "${conf_path}" > "${tmp_conf}" 2>/dev/null && [[ -s "${tmp_conf}" ]]; then
+        mv -f "${tmp_conf}" "${conf_path}"
+        return 0
+    fi
+    rm -f "${tmp_conf}" 2>/dev/null || true
+    return 1
+}
+
+reload_singbox_service() {
+    run_sb_cmd 10 fix-config.json >/dev/null 2>&1 || true
+    run_sb_cmd 10 restart >/dev/null 2>&1 || systemctl restart sing-box >/dev/null 2>&1 || true
+}
+
+# ==============================================================================
+# 备份与回滚
 # ==============================================================================
 
 backup_configs() {
@@ -715,8 +574,9 @@ backup_configs() {
     if [[ -d "${SB_CONF_DIR}" ]]; then
         mkdir -p "${BACKUP_DIR}/latest"
         cp -af "${SB_CONF_DIR}"/*.json "${BACKUP_DIR}/latest/" 2>/dev/null || true
+        [[ -f "${STATE_FILE}" ]] && cp -af "${STATE_FILE}" "${BACKUP_DIR}/latest/slots_state.json" 2>/dev/null || true
         date '+%Y-%m-%d %H:%M:%S' > "${BACKUP_DIR}/latest/backup_time.txt"
-        info "已备份当前 sing-box 节点配置至 ${BACKUP_DIR}/latest"
+        info "已备份当前 sing-box 节点配置与槽位状态至 ${BACKUP_DIR}/latest"
     fi
 }
 
@@ -724,8 +584,8 @@ rollback_configs() {
     if [[ -d "${BACKUP_DIR}/latest" ]] && compgen -G "${BACKUP_DIR}/latest/*.json" >/dev/null; then
         warn "正在回滚 sing-box 节点配置至轮换前状态..."
         cp -af "${BACKUP_DIR}/latest"/*.json "${SB_CONF_DIR}/"
-        run_sb_cmd 10 fix-config.json >/dev/null 2>&1 || true
-        run_sb_cmd 10 restart >/dev/null 2>&1 || true
+        [[ -f "${BACKUP_DIR}/latest/slots_state.json" ]] && cp -af "${BACKUP_DIR}/latest/slots_state.json" "${STATE_FILE}"
+        reload_singbox_service
         info "已成功恢复轮换前的节点配置并重启 sing-box 服务"
         return 0
     else
@@ -735,58 +595,38 @@ rollback_configs() {
 }
 
 # ==============================================================================
-# Telegram 通知推送 (可选)
+# 面板通信与签名上报
 # ==============================================================================
 
 send_tg_notify() {
-    local status_title="$1"
-    local detail_msg="$2"
-    if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
-        return 0
-    fi
+    local status_title="$1" detail_msg="$2"
+    [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]] && return 0
     local srv_name="${CUSTOM_SERVER_NAME:-$(hostname)}"
-    local text="<b>[sb-rotator] ${status_title}</b>%0A主机: <code>${srv_name}</code>%0A时间: <code>$(now_beijing) CST</code>%0A详情: ${detail_msg}"
+    local text="<b>[sb-rotator v${VERSION}] ${status_title}</b>%0A主机: <code>${srv_name}</code>%0A时间: <code>$(now_beijing) CST</code>%0A详情: ${detail_msg}"
     curl -fsSL --connect-timeout 8 --max-time 15 \
         -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${TG_CHAT_ID}" \
-        -d "parse_mode=HTML" \
-        -d "text=${text}" >/dev/null 2>&1 || warn "Telegram 通知发送失败"
+        -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=HTML" -d "text=${text}" >/dev/null 2>&1 || true
 }
 
-# ==============================================================================
-# API 签名与上报通信实现
-# ==============================================================================
-
 compute_signature() {
-    local timestamp="$1"
-    local payload="$2"
+    local timestamp="$1" payload="$2"
     if command -v openssl >/dev/null 2>&1; then
         printf '%s.%s' "${timestamp}" "${payload}" | openssl dgst -sha256 -hmac "${API_KEY}" | awk '{print $NF}'
-    elif command -v sha256sum >/dev/null 2>&1; then
-        printf '%s.%s.%s' "${timestamp}" "${payload}" "${API_KEY}" | sha256sum | awk '{print $1}'
     else
-        echo "unsigned"
+        printf '%s.%s.%s' "${timestamp}" "${payload}" "${API_KEY}" | sha256sum | awk '{print $1}'
     fi
 }
 
 post_to_panel() {
     local payload="$1"
-    local endpoint
-    endpoint="$(get_endpoint_url)" || {
-        err "未配置有效的 PANEL_URL"
-        return 1
-    }
-
-    local max_retries="${MAX_RETRIES:-3}"
-    local retry_delay="${RETRY_DELAY:-5}"
-    local attempt=1
+    local endpoint; endpoint="$(get_endpoint_url)" || { err "未配置有效的 PANEL_URL"; return 1; }
+    local max_retries="${MAX_RETRIES:-3}" retry_delay="${RETRY_DELAY:-5}" attempt=1
     local ts sig http_code resp_file
     resp_file="$(mktemp /tmp/sb-rotator-resp.XXXXXX)"
 
     while (( attempt <= max_retries )); do
         ts="$(date +%s)"
         sig="$(compute_signature "${ts}" "${payload}")"
-
         http_code="$(curl -sS --connect-timeout 10 --max-time 25 \
             -o "${resp_file}" -w "%{http_code}" \
             -X POST "${endpoint}" \
@@ -806,283 +646,315 @@ post_to_panel() {
             info "面板 API 同步成功 (HTTP ${http_code})，响应: ${resp_body:-OK}"
             return 0
         fi
-
-        warn "面板 API 请求失败 (第 ${attempt}/${max_retries} 次尝试, HTTP ${http_code})，响应: ${resp_body:-无响应}"
-        if (( attempt < max_retries )); then
-            sleep "${retry_delay}"
-            retry_delay=$(( retry_delay * 2 ))
-        fi
+        warn "面板 API 请求失败 (第 ${attempt}/${max_retries} 次, HTTP ${http_code})，响应: ${resp_body:-无响应}"
+        (( attempt < max_retries )) && { sleep "${retry_delay}"; retry_delay=$(( retry_delay * 2 )); }
         ((attempt++))
     done
 
     rm -f "${resp_file}"
     printf '%s\n' "${payload}" > "${CACHE_DIR}/last_failed_payload.json"
-    err "面板 API 同步在 ${max_retries} 次尝试后仍然失败，载荷已保存至 ${CACHE_DIR}/last_failed_payload.json"
+    err "面板 API 同步失败，载荷已保存至 ${CACHE_DIR}/last_failed_payload.json"
     return 1
 }
 
 # ==============================================================================
-# 核心流程：密码/UUID 轮换与同步
+# 核心执行流：支持全量初始化 (all) / 仅长效轮换 (long) / 仅短期轮换 (daily) / 仅同步 (sync_only)
 # ==============================================================================
 
-run_rotation() {
-    local mode="rotate"
-    local is_cron=0
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --cron)      is_cron=1 ;;
-            --sync-only) mode="sync_only" ;;
-            --dry-run)   mode="dry_run" ;;
-        esac
-        shift
-    done
+execute_workflow() {
+    local task_type="$1"      # init | cron_long | force_long | cron_daily | sync_only | dry_run
+    local custom_slot="${2:-}"
+    local is_cron="${3:-0}"
 
     ensure_dirs
     rotate_log_if_needed
     load_config
 
     if [[ -z "${PANEL_URL}" || -z "${API_KEY}" || -z "${NODE_IDS}" ]]; then
-        err "配置不完整 (PANEL_URL / API_KEY / NODE_IDS 不能为空)，请先运行 sb-rotator 进行配置"
+        err "配置不完整 (PANEL_URL / API_KEY / NODE_IDS 不能为空)，请先运行 sb-rotator 配置"
         return 1
     fi
 
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
-        warn "检测到另一个 sb-rotator 实例正在运行，本次任务跳过"
+        warn "检测到另一个 sb-rotator 实例正在运行，跳过本次执行"
         return 1
     fi
+
+    # 若尚未完成首次全量初始化，任何定时任务触发时自动升级为首次全量初始化并上传全部 6 组密码
+    if [[ ! -f "${INIT_FLAG}" && "${task_type}" != "dry_run" && "${task_type}" != "init" ]]; then
+        info "检测到首次运行，自动切换为【首次全量生成并上传全部 6 组槽位密码】模式..."
+        task_type="init"
+    fi
+
+    # 决定本次要轮换及上传的槽位列表
+    local upload_slots=()
+    local sync_scope="incremental"
+    local conf_action="rotate_one"
+    local target_slot_key=""
+
+    case "${task_type}" in
+        init)
+            sync_scope="full"
+            conf_action="init"
+            upload_slots=("L:01" "L:02" "L:03" "L:04" "L:05" "D:00")
+            ;;
+        sync_only)
+            sync_scope="full"
+            conf_action="ensure"
+            upload_slots=("L:01" "L:02" "L:03" "L:04" "L:05" "D:00")
+            ;;
+        cron_long)
+            if ! is_long_rotation_day; then
+                info "今日为自然年第 $(get_beijing_doy) 天，非 3 天长效轮换日，无需更换长效槽位"
+                return 0
+            fi
+            local due_num; due_num="$(get_due_long_slot_num)"
+            target_slot_key="L:0${due_num}"
+            upload_slots=("${target_slot_key}")
+            ;;
+        force_long)
+            local due_num="${custom_slot:-$(get_due_long_slot_num)}"
+            due_num="${due_num#0}"
+            target_slot_key="L:0${due_num}"
+            upload_slots=("${target_slot_key}")
+            ;;
+        cron_daily)
+            target_slot_key="D:00"
+            upload_slots=("D:00")
+            ;;
+        dry_run)
+            sync_scope="full"
+            conf_action="ensure"
+            upload_slots=("L:01" "L:02" "L:03" "L:04" "L:05" "D:00")
+            ;;
+    esac
 
     if (( is_cron == 1 )) && [[ "${RANDOM_JITTER_MAX:-0}" =~ ^[0-9]+$ ]] && (( RANDOM_JITTER_MAX > 0 )); then
         local delay=$(( RANDOM % RANDOM_JITTER_MAX ))
-        if (( delay > 0 )); then
-            info "定时任务触发，随机等待 ${delay} 秒以分散面板并发压力..."
-            sleep "${delay}"
-        fi
+        (( delay > 0 )) && { info "定时任务随机延迟 ${delay} 秒..."; sleep "${delay}"; }
     fi
 
-    find_sb_bin >/dev/null || {
-        err "未找到 sing-box 管理命令，请确认已安装 233boy/sing-box"
-        return 1
-    }
-
-    step "开始扫描本机 sing-box 节点配置..."
     local nodes_raw
-    nodes_raw="$(discover_nodes)" || {
-        err "未发现任何 sing-box 节点配置文件"
-        return 1
-    }
+    nodes_raw="$(discover_nodes)" || { err "未发现任何 sing-box 节点配置文件"; return 1; }
 
-    if [[ "${mode}" == "rotate" ]]; then
+    if [[ "${task_type}" != "sync_only" && "${task_type}" != "dry_run" ]]; then
         backup_configs
     fi
 
     local srv_hostname="${CUSTOM_SERVER_NAME:-$(hostname)}"
-    local srv_ip
-    srv_ip="$(get_server_ip)"
-    local rotated_at
-    rotated_at="$(now_iso8601)"
-    local ts
-    ts="$(date +%s)"
+    local srv_ip; srv_ip="$(get_server_ip)"
+    local rotated_at; rotated_at="$(now_iso8601)"
+    local now_ts; now_ts="$(date +%s)"
+    local doy; doy="$(get_beijing_doy)"
 
-    local nodes_json_array=""
-    local single_payloads=()
-    local rotated_count=0
-    local skipped_count=0
+    local nodes_json_items=""
+    local processed_nodes=0
 
     while IFS='|' read -r idx fname shortname; do
         [[ -z "${idx}" ]] && continue
-        local panel_node_id
-        panel_node_id="$(resolve_panel_node_id "${idx}" "${fname}")" || true
+        local panel_id
+        panel_id="$(resolve_panel_node_id "${idx}" "${fname}")" || continue
 
-        if [[ -z "${panel_node_id}" ]]; then
-            info "序号 #${idx} [${fname}] 未配置对应的面板节点 ID，跳过处理"
-            ((skipped_count++))
-            continue
-        fi
+        local meta proto port cred_field
+        meta="$(inspect_node_meta "${shortname}" "${fname}")"
+        IFS='|' read -r proto port cred_field <<< "${meta}"
 
-        # 1. 查询当前配置及协议类型
-        local meta proto port rotate_type old_cred
-        meta="$(inspect_node_info "${shortname}" "${fname}" "${idx}")"
-        IFS='|' read -r proto port rotate_type old_cred <<< "${meta}"
+        step "处理节点 #${idx} [${fname}] (面板NodeID: ${panel_id}, 协议: ${proto}, 凭据字段: ${cred_field})"
 
-        step "处理节点 #${idx}: ${fname} (协议: ${proto}, 端口: ${port}, 面板节点ID: ${panel_node_id})"
-
-        # 2. 执行自动更换 UUID 或 密码，并验证凭据确实已变更
-        if [[ "${mode}" == "rotate" ]]; then
-            if ! rotate_single_node_credential "${idx}" "${shortname}" "${fname}" "${port}" "${rotate_type}" "${old_cred}"; then
-                err "节点 #${idx} [${fname}] 密码/UUID 轮换失败（凭据未发生改变）"
-                if [[ "${ROLLBACK_ON_FAIL}" == "true" ]]; then
-                    rollback_configs
-                fi
-                send_tg_notify "节点改密失败" "节点 ${fname} 无法更新凭据，已中止同步"
-                return 1
-            fi
-        elif [[ "${mode}" == "dry_run" ]]; then
-            info "[演练模式] 将执行命令: sing-box ${rotate_type} ${shortname} auto"
-        else
-            info "[仅同步模式] 不修改密码，直接读取节点 ${shortname} 当前链接"
-        fi
-
-        # 3. 重新读取最新配置与完整节点链接 (`sing-box info` + `sing-box url`)
-        local new_meta new_proto new_port new_type new_cred node_url
-        new_meta="$(inspect_node_info "${shortname}" "${fname}" "${idx}")"
-        IFS='|' read -r new_proto new_port new_type new_cred <<< "${new_meta}"
-
-        if [[ "${mode}" == "rotate" ]]; then
-            info "节点 #${idx} [${fname}] 凭据已更新: ${old_cred} -> ${new_cred}"
-        fi
-
-        node_url="$(get_node_url "${idx}" "${shortname}" "${fname}" "${new_proto}" "${new_port}" "${new_cred}" "${old_cred}")"
-
-        if [[ -z "${node_url}" ]]; then
-            err "无法获取节点 ${fname} 的有效分享链接 (sing-box url ${shortname} 未返回代理链接)"
-            if [[ "${mode}" == "rotate" && "${ROLLBACK_ON_FAIL}" == "true" ]]; then
-                rollback_configs
-            fi
-            send_tg_notify "节点链接提取失败" "节点 ${fname} 无法生成有效代理 URL，已中止同步"
+        if ! update_node_slots_in_conf "${fname}" "${panel_id}" "${cred_field}" "${conf_action}" "${target_slot_key}"; then
+            err "更新节点 [${fname}] 多槽位配置失败"
+            [[ "${ROLLBACK_ON_FAIL}" == "true" && "${task_type}" != "dry_run" ]] && rollback_configs
             return 1
         fi
 
-        info "节点 #${idx} [${fname}] -> 面板 ID [${panel_node_id}] 链接已生成: ${node_url:0:48}..."
-
-        local item_json
-        item_json=$(cat <<EOF
-    {
-      "index": ${idx},
-      "node_id": "$(json_escape "${panel_node_id}")",
-      "config_name": "$(json_escape "${fname}")",
-      "protocol": "$(json_escape "${new_proto}")",
-      "port": ${new_port:-0},
-      "rotate_type": "$(json_escape "${rotate_type}")",
-      "credential": "$(json_escape "${new_cred}")",
-      "node_url": "$(json_escape "${node_url}")"
-    }
-EOF
-)
-        if [[ -n "${nodes_json_array}" ]]; then
-            nodes_json_array="${nodes_json_array},"$'\n'"${item_json}"
-        else
-            nodes_json_array="${item_json}"
-        fi
-
-        local single_json
-        single_json=$(cat <<EOF
-{
-  "action": "rotate_node",
-  "server_hostname": "$(json_escape "${srv_hostname}")",
-  "server_ip": "$(json_escape "${srv_ip}")",
-  "rotated_at": "${rotated_at}",
-  "timestamp": ${ts},
-  "node_id": "$(json_escape "${panel_node_id}")",
-  "config_name": "$(json_escape "${fname}")",
-  "protocol": "$(json_escape "${new_proto}")",
-  "port": ${new_port:-0},
-  "rotate_type": "$(json_escape "${rotate_type}")",
-  "credential": "$(json_escape "${new_cred}")",
-  "node_url": "$(json_escape "${node_url}")"
-}
-EOF
-)
-        single_payloads+=("${single_json}")
-        ((rotated_count++))
+        ((processed_nodes++))
     done <<< "${nodes_raw}"
 
-    if (( rotated_count == 0 )); then
-        warn "没有任何节点匹配到有效的面板 Node ID，任务结束"
+    if (( processed_nodes == 0 )); then
+        warn "没有匹配到任何已绑定面板 ID 的节点"
         return 1
     fi
 
-    local batch_payload
-    batch_payload=$(cat <<EOF
+    # 使最新槽位配置在 sing-box 中生效，以便提取链接与接受客户端连接
+    if [[ "${task_type}" != "sync_only" && "${task_type}" != "dry_run" ]]; then
+        reload_singbox_service
+    fi
+
+    # 构建要上传的 JSON 数据 (首次上传全部 6 个槽位，后续仅上传本次变更的槽位)
+    local total_uploaded_slots=0
+    while IFS='|' read -r idx fname shortname; do
+        [[ -z "${idx}" ]] && continue
+        local panel_id
+        panel_id="$(resolve_panel_node_id "${idx}" "${fname}")" || continue
+
+        local meta proto port cred_field
+        meta="$(inspect_node_meta "${shortname}" "${fname}")"
+        IFS='|' read -r proto port cred_field <<< "${meta}"
+
+        local conf_path="${SB_CONF_DIR}/${fname}"
+        local first_cred
+        first_cred="$(jq -r --arg cf "${cred_field}" '.inbounds[0].users[0][$cf] // empty' "${conf_path}" 2>/dev/null)"
+        local base_url
+        base_url="$(get_base_node_url "${idx}" "${shortname}" "${fname}" "${proto}" "${port}" "${first_cred}")"
+
+        local slots_json_arr=""
+        local sk slot_id slot_tag slot_type slot_cred exp_ts exp_iso slot_url
+        for sk in "${upload_slots[@]}"; do
+            slot_id="${panel_id}:${sk}"
+            if [[ "${sk}" == "D:00" ]]; then
+                slot_tag="P24h"
+                slot_type="daily"
+            else
+                slot_tag="P_0${sk#L:0}"
+                slot_type="long"
+            fi
+
+            slot_cred="$(jq -r --arg name "${slot_id}" --arg cf "${cred_field}" '
+                .inbounds[0].users[]? | select(.name == $name) | .[$cf] // empty
+            ' "${conf_path}" 2>/dev/null | head -n1)"
+
+            exp_ts="$(get_slot_expire_from_state "${slot_id}")"
+            exp_iso="$(ts_to_iso8601_cst "${exp_ts}")"
+            slot_url="$(build_slot_node_url "${base_url}" "${first_cred}" "${slot_cred}" "${slot_id}" "${proto}")"
+
+            info "  -> 槽位 [${slot_id}] (${slot_tag}) 凭据: ${slot_cred} | 到期: ${exp_iso} (${exp_ts})"
+
+            local slot_obj
+            slot_obj=$(cat <<EOF
+        {
+          "slot_id": "$(json_escape "${slot_id}")",
+          "slot_tag": "$(json_escape "${slot_tag}")",
+          "slot_type": "$(json_escape "${slot_type}")",
+          "credential": "$(json_escape "${slot_cred}")",
+          "node_url": "$(json_escape "${slot_url}")",
+          "expires_at": ${exp_ts},
+          "expires_at_iso": "${exp_iso}"
+        }
+EOF
+)
+            if [[ -n "${slots_json_arr}" ]]; then
+                slots_json_arr="${slots_json_arr},"$'\n'"${slot_obj}"
+            else
+                slots_json_arr="${slot_obj}"
+            fi
+            ((total_uploaded_slots++))
+        done
+
+        # 为向后兼容旧版字段，同时在节点级保留主槽位或当前变更槽位的摘要信息
+        local primary_slot_id="${panel_id}:${upload_slots[0]}"
+        local primary_cred primary_url primary_exp
+        primary_cred="$(jq -r --arg name "${primary_slot_id}" --arg cf "${cred_field}" '.inbounds[0].users[]? | select(.name == $name) | .[$cf] // empty' "${conf_path}" 2>/dev/null | head -n1)"
+        primary_exp="$(get_slot_expire_from_state "${primary_slot_id}")"
+        primary_url="$(build_slot_node_url "${base_url}" "${first_cred}" "${primary_cred}" "${primary_slot_id}" "${proto}")"
+
+        local node_obj
+        node_obj=$(cat <<EOF
+    {
+      "index": ${idx},
+      "node_id": "$(json_escape "${panel_id}")",
+      "config_name": "$(json_escape "${fname}")",
+      "protocol": "$(json_escape "${proto}")",
+      "port": ${port:-0},
+      "credential_type": "$(json_escape "${cred_field}")",
+      "slot_id": "$(json_escape "${primary_slot_id}")",
+      "credential": "$(json_escape "${primary_cred}")",
+      "node_url": "$(json_escape "${primary_url}")",
+      "expires_at": ${primary_exp},
+      "slots": [
+${slots_json_arr}
+      ]
+    }
+EOF
+)
+        if [[ -n "${nodes_json_items}" ]]; then
+            nodes_json_items="${nodes_json_items},"$'\n'"${node_obj}"
+        else
+            nodes_json_items="${node_obj}"
+        fi
+    done <<< "${nodes_raw}"
+
+    local payload
+    payload=$(cat <<EOF
 {
   "action": "rotate_nodes_batch",
+  "version": "${VERSION}",
+  "sync_scope": "${sync_scope}",
+  "day_of_year": ${doy},
+  "timezone": "Asia/Shanghai",
   "server_hostname": "$(json_escape "${srv_hostname}")",
   "server_ip": "$(json_escape "${srv_ip}")",
   "rotated_at": "${rotated_at}",
-  "timestamp": ${ts},
+  "timestamp": ${now_ts},
   "nodes": [
-${nodes_json_array}
+${nodes_json_items}
   ]
 }
 EOF
 )
 
-    if [[ "${mode}" == "dry_run" ]]; then
+    if [[ "${task_type}" == "dry_run" ]]; then
         echo -e "\n${BOLD}${CYAN}=== [演练模式] 即将发送至 $(get_endpoint_url) 的 JSON 载荷 ===${NC}"
-        echo "${batch_payload}"
+        echo "${payload}"
         echo -e "${BOLD}${CYAN}==============================================================${NC}"
         return 0
     fi
 
-    step "正在将 ${rotated_count} 个节点的最新链接同步至订阅管理面板..."
-    local sync_ok=0
-    if [[ "${SYNC_MODE:-batch}" == "single" ]]; then
-        local sp
-        sync_ok=1
-        for sp in "${single_payloads[@]}"; do
-            if ! post_to_panel "${sp}"; then
-                sync_ok=0
-                break
-            fi
-        done
-    else
-        if post_to_panel "${batch_payload}"; then
-            sync_ok=1
-        fi
-    fi
-
-    if (( sync_ok == 1 )); then
-        printf '%s\n' "${batch_payload}" > "${CACHE_DIR}/last_success_payload.json"
-        info "全部 ${rotated_count} 个节点轮换并同步面板成功！"
-        send_tg_notify "每日节点轮换成功" "已成功更新并同步 ${rotated_count} 个节点链接至面板"
+    step "正在向面板推送 ${processed_nodes} 个节点共 ${total_uploaded_slots} 个槽位的完整链接与到期时间戳 (模式: ${sync_scope})..."
+    if post_to_panel "${payload}"; then
+        printf '%s\n' "${payload}" > "${CACHE_DIR}/last_success_payload.json"
+        touch "${INIT_FLAG}"
+        info "同步完成！本次共上传 ${total_uploaded_slots} 个槽位链接。"
+        send_tg_notify "槽位轮换同步成功 (${sync_scope})" "已同步 ${processed_nodes} 个节点 (${total_uploaded_slots} 个槽位)"
         return 0
     else
-        err "同步至订阅管理面板失败！"
-        if [[ "${mode}" == "rotate" && "${ROLLBACK_ON_FAIL:-true}" == "true" ]]; then
+        err "同步至管理面板失败！"
+        if [[ "${task_type}" != "sync_only" && "${ROLLBACK_ON_FAIL:-true}" == "true" ]]; then
             rollback_configs
-            send_tg_notify "面板同步失败 (已自动回滚)" "API 请求失败，已自动恢复原节点密码以保障在线用户连接"
-        else
-            send_tg_notify "面板同步失败 (未回滚)" "API 请求失败，新节点载荷保存在 ${CACHE_DIR}/last_failed_payload.json"
+            send_tg_notify "面板同步失败 (已自动回滚)" "API 请求失败，已恢复原槽位配置"
         fi
         return 1
     fi
 }
 
 # ==============================================================================
-# 定时任务部署与管理 (默认北京时间 Asia/Shanghai 凌晨 04:00)
+# 定时任务管理 (北京时间 03:00 轮换长效槽位，04:00 轮换每日短期槽位)
 # ==============================================================================
 
-setup_cron() {
-    load_config
-    local hour="${CRON_HOUR:-4}"
-    local minute="${CRON_MINUTE:-0}"
-
-    local sys_offset_sec cst_offset_sec diff_hours local_hour
+calc_local_hour_from_beijing() {
+    local bj_hour="$1"
+    local sys_offset_sec cst_offset_sec diff_hours
     sys_offset_sec="$(date +%z | awk '{
-        sign = substr($0,1,1);
-        h = substr($0,2,2) + 0;
-        m = substr($0,4,2) + 0;
-        sec = h * 3600 + m * 60;
-        if (sign == "-") sec = -sec;
-        print sec;
+        sign = substr($0,1,1); h = substr($0,2,2) + 0; m = substr($0,4,2) + 0;
+        sec = h * 3600 + m * 60; if (sign == "-") sec = -sec; print sec;
     }')"
     cst_offset_sec=$(( 8 * 3600 ))
     diff_hours=$(( (sys_offset_sec - cst_offset_sec) / 3600 ))
-    local_hour=$(( (hour + diff_hours + 24) % 24 ))
+    echo $(( (bj_hour + diff_hours + 24) % 24 ))
+}
+
+setup_cron() {
+    load_config
+    local long_bj_h="${LONG_CRON_HOUR:-3}"
+    local daily_bj_h="${DAILY_CRON_HOUR:-4}"
+    local min="${CRON_MINUTE:-0}"
+
+    local long_local_h daily_local_h
+    long_local_h="$(calc_local_hour_from_beijing "${long_bj_h}")"
+    daily_local_h="$(calc_local_hour_from_beijing "${daily_bj_h}")"
 
     cat > "${CRON_FILE}" <<EOF
-# sb-rotator 每日自动更换 sing-box 节点密码/UUID 并同步至面板
-# 设定时间: 每日北京时间 (Asia/Shanghai) $(printf '%02d:%02d' "${hour}" "${minute}")
-# 对应当前服务器本地时区时间: $(printf '%02d:%02d' "${local_hour}" "${minute}")
+# sb-rotator v2.0.0 定时任务
+# 1) 每日北京时间 $(printf '%02d:%02d' "${long_bj_h}" "${min}") 检查并轮换到期长效密码槽位 (每隔3天轮换1组，15天有效期)
+# 2) 每日北京时间 $(printf '%02d:%02d' "${daily_bj_h}" "${min}") 轮换短期24h密码槽位 (D:00 / P24h)
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-${minute} ${local_hour} * * * root /usr/local/bin/sb-rotator --cron >> ${LOG_FILE} 2>&1
+${min} ${long_local_h} * * * root /usr/local/bin/sb-rotator --cron-long >> ${LOG_FILE} 2>&1
+${min} ${daily_local_h} * * * root /usr/local/bin/sb-rotator --cron-daily >> ${LOG_FILE} 2>&1
 EOF
     chmod 644 "${CRON_FILE}"
-
-    systemctl reload cron 2>/dev/null || systemctl reload crond 2>/dev/null || service cron reload 2>/dev/null || service crond reload 2>/dev/null || true
-    info "已部署定时任务: 每日北京时间 $(printf '%02d:%02d' "${hour}" "${minute}") (服务器本地时间 $(printf '%02d:%02d' "${local_hour}" "${minute}")) 自动执行"
+    systemctl reload cron 2>/dev/null || systemctl reload crond 2>/dev/null || service cron reload 2>/dev/null || true
+    info "已部署双定时任务: 长效槽位每日北京时间 $(printf '%02d:%02d' "${long_bj_h}" "${min}") (本地 $(printf '%02d:%02d' "${long_local_h}" "${min}"))，短期槽位每日北京时间 $(printf '%02d:%02d' "${daily_bj_h}" "${min}") (本地 $(printf '%02d:%02d' "${daily_local_h}" "${min}"))"
 }
 
 remove_cron() {
@@ -1094,13 +966,17 @@ remove_cron() {
 }
 
 # ==============================================================================
-# 状态展示、连通性测试与一键卸载
+# 状态展示与交互面板
 # ==============================================================================
 
 show_mapping_table() {
     load_config
-    echo -e "\n${BOLD}${CYAN}================ 当前本机 sing-box 节点与面板映射表 ================${NC}"
-    printf "${BOLD}%-6s %-28s %-14s %-8s %-10s %-14s${NC}\n" "序号" "节点配置文件" "协议类型" "端口" "轮换方式" "对应面板ID"
+    ensure_dirs
+    local doy due_num
+    doy="$(get_beijing_doy)"
+    due_num="$(get_due_long_slot_num)"
+    echo -e "\n${BOLD}${CYAN}================ 当前本机 sing-box 节点与 6 槽位状态表 ================${NC}"
+    echo -e "当前北京时间: $(now_beijing) | 自然年第 ${BOLD}${doy}${NC} 天 | 当前周期轮值长效槽: ${BOLD}L:0${due_num}${NC}"
     echo "--------------------------------------------------------------------------------"
 
     local nodes_raw
@@ -1112,29 +988,40 @@ show_mapping_table() {
 
     while IFS='|' read -r idx fname shortname; do
         [[ -z "${idx}" ]] && continue
-        local meta proto port rtype cred panel_id
-        meta="$(inspect_node_info "${shortname}" "${fname}" "${idx}")"
-        IFS='|' read -r proto port rtype cred <<< "${meta}"
+        local meta proto port cred_field panel_id
+        meta="$(inspect_node_meta "${shortname}" "${fname}")"
+        IFS='|' read -r proto port cred_field <<< "${meta}"
         panel_id="$(resolve_panel_node_id "${idx}" "${fname}")" || panel_id="未绑定(跳过)"
-        local rcmd="sing-box ${rtype}"
-        printf "%-6s %-28s %-14s %-8s %-12s %-14s\n" "${idx})" "${fname}" "${proto}" "${port}" "${rcmd}" "${panel_id}"
+        echo -e "${BOLD}节点 #${idx}) ${fname}${NC} | 协议: ${GREEN}${proto}${NC} | 端口: ${port} | 凭据字段: ${cred_field} | 面板NodeID: ${YELLOW}${panel_id}${NC}"
+
+        if [[ "${panel_id}" != "未绑定(跳过)" && -f "${SB_CONF_DIR}/${fname}" ]]; then
+            local sk slot_id u_cred exp_ts exp_str
+            for sk in "L:01" "L:02" "L:03" "L:04" "L:05" "D:00"; do
+                slot_id="${panel_id}:${sk}"
+                u_cred="$(jq -r --arg name "${slot_id}" --arg cf "${cred_field}" '.inbounds[0].users[]? | select(.name == $name) | .[$cf] // empty' "${SB_CONF_DIR}/${fname}" 2>/dev/null | head -n1)"
+                exp_ts="$(get_slot_expire_from_state "${slot_id}")"
+                if [[ -n "${u_cred}" && "${exp_ts}" != "0" ]]; then
+                    exp_str="$(ts_to_iso8601_cst "${exp_ts}")"
+                    printf "   ├─ 槽位 %-8s : %-36s (到期: %s | TS: %s)\n" "${slot_id}" "${u_cred}" "${exp_str}" "${exp_ts}"
+                else
+                    printf "   ├─ 槽位 %-8s : 未初始化 (执行首次全量同步后自动生成)\n" "${slot_id}"
+                fi
+            done
+        fi
     done <<< "${nodes_raw}"
     echo "================================================================================"
 }
 
 test_api_connection() {
     load_config
-    local endpoint
-    endpoint="$(get_endpoint_url)" || {
-        err "请先配置面板地址 (PANEL_URL)"
-        return 1
-    }
+    local endpoint; endpoint="$(get_endpoint_url)" || { err "请先配置面板地址 (PANEL_URL)"; return 1; }
     step "正在向面板接口发送连通性测试请求: ${endpoint}"
     local ts sig payload http_code resp_file
     ts="$(date +%s)"
     payload=$(cat <<EOF
 {
   "action": "ping",
+  "version": "${VERSION}",
   "server_hostname": "$(json_escape "${CUSTOM_SERVER_NAME:-$(hostname)}")",
   "server_ip": "$(get_server_ip)",
   "timestamp": ${ts}
@@ -1143,66 +1030,42 @@ EOF
 )
     sig="$(compute_signature "${ts}" "${payload}")"
     resp_file="$(mktemp /tmp/sb-rotator-ping.XXXXXX)"
-
-    http_code="$(curl -sS --connect-timeout 8 --max-time 15 \
-        -o "${resp_file}" -w "%{http_code}" \
-        -X POST "${endpoint}" \
+    http_code="$(curl -sS --connect-timeout 8 --max-time 15 -o "${resp_file}" -w "%{http_code}" -X POST "${endpoint}" \
         -H "Content-Type: application/json; charset=utf-8" \
         -H "Authorization: Bearer ${API_KEY}" \
         -H "X-API-Key: ${API_KEY}" \
         -H "X-Timestamp: ${ts}" \
         -H "X-Signature: ${sig}" \
         -d "${payload}" 2>&1 || echo "000")"
-
-    local body=""
-    [[ -f "${resp_file}" ]] && body="$(head -c 400 "${resp_file}")"
+    local body=""; [[ -f "${resp_file}" ]] && body="$(head -c 400 "${resp_file}")"
     rm -f "${resp_file}"
-
-    echo -e "HTTP 状态码: ${BOLD}${http_code}${NC}"
-    echo -e "面板响应内容: ${body:-<空>}"
-    if [[ "${http_code}" =~ ^2[0-9][0-9]$ ]]; then
-        info "面板 API 通信测试通过！"
-        return 0
-    else
-        warn "面板未返回 2xx 状态码，请检查面板接口地址、API Key 或防火墙设置。"
-        return 1
-    fi
+    echo -e "HTTP 状态码: ${BOLD}${http_code}${NC}\n面板响应内容: ${body:-<空>}"
+    [[ "${http_code}" =~ ^2[0-9][0-9]$ ]] && { info "面板 API 通信测试通过！"; return 0; }
+    warn "面板未返回 2xx 状态码，请检查配置。"
+    return 1
 }
 
 interactive_configure() {
     load_config
-    echo -e "\n${BOLD}${BLUE}>>> 配置 sb-rotator 节点自动轮换与面板对接参数 <<<${NC}"
+    echo -e "\n${BOLD}${BLUE}>>> 配置 sb-rotator v${VERSION} 多槽位阶梯轮换与面板对接参数 <<<${NC}"
     show_mapping_table || true
 
-    echo ""
-    local input_url input_key input_ids input_hour input_min input_rb input_tg input_tk input_cid
-    prompt_read "1. 请输入订阅管理面板地址 (例如 https://panel.example.com 或完整 API 地址) [${PANEL_URL}]: " input_url || return 1
+    local input_url input_key input_ids input_rb input_tg input_tk input_cid
+    prompt_read "1. 请输入订阅管理面板地址 [${PANEL_URL}]: " input_url || return 1
     PANEL_URL="${input_url:-${PANEL_URL}}"
 
     prompt_read "2. 请输入面板通信密码 / API Key [${API_KEY}]: " input_key || return 1
     API_KEY="${input_key:-${API_KEY}}"
 
-    echo -e "\n${CYAN}提示: 多个节点 ID 请用英文逗号分隔，第 1 个对应配置中的 1)，第 2 个对应 2)，以此类推。"
-    echo -e "      如果某个序号的节点不需要轮换，对应位置填 0 即可（例如: 101,0,103）。${NC}"
+    echo -e "\n${CYAN}提示: 多个节点 ID 用英文逗号分隔，第 1 个对应配置中的 1)，第 2 个对应 2)，不需要轮换填 0。${NC}"
     prompt_read "3. 请输入面板节点 ID 列表 [${NODE_IDS}]: " input_ids || return 1
     NODE_IDS="${input_ids:-${NODE_IDS}}"
     NODE_IDS="${NODE_IDS// /,}"
 
-    echo ""
-    prompt_read "4. 请输入每日自动修改密码的北京时间小时 (0-23，默认凌晨 4 点) [${CRON_HOUR:-4}]: " input_hour || return 1
-    CRON_HOUR="${input_hour:-${CRON_HOUR:-4}}"
+    prompt_read "4. 面板同步失败时是否自动回滚配置? (y/n，默认 y) [y]: " input_rb || return 1
+    [[ "${input_rb:-y}" =~ ^[Nn]$ ]] && ROLLBACK_ON_FAIL="false" || ROLLBACK_ON_FAIL="true"
 
-    prompt_read "5. 请输入每日自动修改密码的分钟 (0-59，默认 0 分) [${CRON_MINUTE:-0}]: " input_min || return 1
-    CRON_MINUTE="${input_min:-${CRON_MINUTE:-0}}"
-
-    prompt_read "6. 面板同步失败时是否自动回滚原密码以防断连? (y/n，默认 y) [y]: " input_rb || return 1
-    if [[ "${input_rb:-y}" =~ ^[Nn]$ ]]; then
-        ROLLBACK_ON_FAIL="false"
-    else
-        ROLLBACK_ON_FAIL="true"
-    fi
-
-    prompt_read "7. [可选] 是否配置 Telegram 机器人告警通知? (y/n，默认 n) [n]: " input_tg || return 1
+    prompt_read "5. [可选] 是否配置 Telegram 告警通知? (y/n，默认 n) [n]: " input_tg || return 1
     if [[ "${input_tg:-n}" =~ ^[Yy]$ ]]; then
         prompt_read "   请输入 Telegram Bot Token [${TG_BOT_TOKEN}]: " input_tk || return 1
         TG_BOT_TOKEN="${input_tk:-${TG_BOT_TOKEN}}"
@@ -1212,68 +1075,36 @@ interactive_configure() {
 
     save_config
     setup_cron
-    echo ""
     info "配置已保存至 ${CONFIG_FILE}"
-    show_mapping_table || true
 }
 
 view_logs_menu() {
-    echo -e "\n${BOLD}${CYAN}================ 日志查看工具 ================${NC}"
+    echo -e "\n${BOLD}${CYAN}================ 日志与载荷查看工具 ================${NC}"
     echo "  1) 查看最近 50 行日志"
     echo "  2) 实时追踪日志输出 (Ctrl+C 退出)"
-    echo "  3) 查看最近一次成功同步的 JSON 载荷"
+    echo "  3) 查看最近一次成功上传的 JSON 载荷"
     echo "  4) 查看最近一次失败的 JSON 载荷"
     echo "  5) 清空历史日志"
     echo "  0) 返回主菜单"
     local log_opt=""
     prompt_read "请选择操作 [0-5]: " log_opt || return 0
     case "${log_opt}" in
-        1)
-            echo -e "\n${BOLD}--- 最近 50 行日志 (${LOG_FILE}) ---${NC}"
-            tail -n 50 "${LOG_FILE}" 2>/dev/null || echo "暂无日志记录"
-            ;;
-        2)
-            echo -e "\n${YELLOW}正在实时追踪日志 (按 Ctrl+C 退出)...${NC}"
-            tail -f "${LOG_FILE}"
-            ;;
-        3)
-            if [[ -f "${CACHE_DIR}/last_success_payload.json" ]]; then
-                cat "${CACHE_DIR}/last_success_payload.json"
-            else
-                echo "暂无成功载荷记录"
-            fi
-            ;;
-        4)
-            if [[ -f "${CACHE_DIR}/last_failed_payload.json" ]]; then
-                cat "${CACHE_DIR}/last_failed_payload.json"
-            else
-                echo "暂无失败载荷记录"
-            fi
-            ;;
-        5)
-            : > "${LOG_FILE}"
-            info "已清空日志文件 ${LOG_FILE}"
-            ;;
-        *)
-            return 0
-            ;;
+        1) tail -n 50 "${LOG_FILE}" 2>/dev/null || echo "暂无日志" ;;
+        2) tail -f "${LOG_FILE}" ;;
+        3) [[ -f "${CACHE_DIR}/last_success_payload.json" ]] && cat "${CACHE_DIR}/last_success_payload.json" || echo "暂无记录" ;;
+        4) [[ -f "${CACHE_DIR}/last_failed_payload.json" ]] && cat "${CACHE_DIR}/last_failed_payload.json" || echo "暂无记录" ;;
+        5) : > "${LOG_FILE}"; info "已清空日志" ;;
     esac
 }
 
 uninstall_all() {
-    echo -e "\n${RED}${BOLD}⚠️  警告：即将卸载 sb-rotator 自动轮换程序及其定时任务（不会影响 233boy sing-box 本身）${NC}"
+    echo -e "\n${RED}${BOLD}⚠️  确认卸载 sb-rotator 及其定时任务吗？（不影响 sing-box 本身）${NC}"
     local confirm=""
-    prompt_read "确认卸载吗？(输入 y 确认卸载，其他键取消): " confirm || return 0
-    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
-        info "已取消卸载"
-        return 0
-    fi
-
+    prompt_read "输入 y 确认卸载，其他键取消: " confirm || return 0
+    [[ ! "${confirm}" =~ ^[Yy]$ ]] && { info "已取消卸载"; return 0; }
     remove_cron
-    rm -rf "${INSTALL_DIR}"
-    rm -f "${LOCK_FILE}"
-    rm -f /usr/local/bin/sb-rotator /usr/local/bin/sbr
-    echo -e "${GREEN}✅ sb-rotator 已彻底卸载完成！（历史日志保留在 ${LOG_FILE}，如需删除可执行 rm -f ${LOG_FILE}）${NC}"
+    rm -rf "${INSTALL_DIR}" "${LOCK_FILE}" /usr/local/bin/sb-rotator /usr/local/bin/sbr
+    echo -e "${GREEN}✅ sb-rotator 已卸载完成！${NC}"
     exit 0
 }
 
@@ -1281,53 +1112,47 @@ main_menu() {
     load_config
     while true; do
         local cron_status="${RED}未启用${NC}"
-        if [[ -f "${CRON_FILE}" ]]; then
-            cron_status="${GREEN}已启用 (每日北京时间 $(printf '%02d:%02d' "${CRON_HOUR:-4}" "${CRON_MINUTE:-0}"))${NC}"
-        fi
+        [[ -f "${CRON_FILE}" ]] && cron_status="${GREEN}已启用 (北京时间 03:00 长效轮换 / 04:00 短期P24h轮换)${NC}"
+        local init_status="${YELLOW}未初始化 (首次运行将上传全部6组密码)${NC}"
+        [[ -f "${INIT_FLAG}" ]] && init_status="${GREEN}已完成首次全量同步 (后续仅增量上传变更密码)${NC}"
 
         echo -e "\n${BOLD}${CYAN}=================================================================${NC}"
-        echo -e "${BOLD}     233boy/sing-box 节点每日自动换密与面板同步工具 v${VERSION}${NC}"
+        echo -e "${BOLD}   233boy/sing-box 多槽位阶梯换密与面板同步工具 v${VERSION}${NC}"
         echo -e "${BOLD}${CYAN}=================================================================${NC}"
         echo -e "  面板接口地址 : ${YELLOW}${PANEL_URL:-未配置}${NC}"
         echo -e "  绑定节点 ID  : ${YELLOW}${NODE_IDS:-未配置}${NC}"
+        echo -e "  初始化状态   : ${init_status}"
         echo -e "  定时任务状态 : ${cron_status}"
-        echo -e "  失败自动回滚 : ${YELLOW}${ROLLBACK_ON_FAIL:-true}${NC}"
-        echo -e "  快捷启动命令 : ${GREEN}sb-rotator${NC} 或 ${GREEN}sbr${NC}"
         echo -e "-----------------------------------------------------------------"
-        echo -e "  ${GREEN}1.${NC} 立即执行一次密码/UUID轮换并上传面板"
-        echo -e "  ${GREEN}2.${NC} 仅同步当前节点链接到面板 (不修改密码)"
-        echo -e "  ${GREEN}3.${NC} 演练模式 (Dry-Run：预览将要执行的命令与上传 JSON)"
-        echo -e "  ${GREEN}4.${NC} 查看本机节点与面板 Node ID 映射关系"
-        echo -e "  ${GREEN}5.${NC} 修改配置 (面板地址 / API Key / 节点 ID / 定时时间)"
-        echo -e "  ${GREEN}6.${NC} 测试面板 API 通信连通性"
-        echo -e "  ${GREEN}7.${NC} 查看运行日志与最近上传的 JSON 载荷"
-        echo -e "  ${GREEN}8.${NC} 开启 / 关闭定时轮换任务"
-        echo -e "  ${GREEN}9.${NC} 紧急回滚到上一次备份的节点配置"
-        echo -e "  ${RED}10.${NC} 一键卸载本程序 (Uninstall)"
-        echo -e "  ${GREEN}0.${NC} 退出管理面板"
+        echo -e "  ${GREEN}1.${NC} 首次全量初始化 / 重置全部 6 组密码并全量上传面板 (--init)"
+        echo -e "  ${GREEN}2.${NC} 立即轮换今日长效槽位 (L:0$(get_due_long_slot_num)) 并增量上传 (--force-long)"
+        echo -e "  ${GREEN}3.${NC} 立即轮换短期 24h 槽位 (D:00 / P24h) 并增量上传 (--rotate-daily)"
+        echo -e "  ${GREEN}4.${NC} 仅全量同步当前 6 组槽位链接到面板 (不改密) (--sync-only)"
+        echo -e "  ${GREEN}5.${NC} 演练模式 (Dry-Run：预览 JSON 载荷，不实际修改) (--dry-run)"
+        echo -e "  ${GREEN}6.${NC} 查看本机节点与 6 槽位凭据/到期时间状态表 (--status)"
+        echo -e "  ${GREEN}7.${NC} 修改对接配置 (面板地址 / API Key / 节点 ID)"
+        echo -e "  ${GREEN}8.${NC} 测试面板 API 连通性 (--test-api)"
+        echo -e "  ${GREEN}9.${NC} 查看运行日志与最近上传的 JSON 载荷"
+        echo -e "  ${GREEN}10.${NC} 紧急回滚到上一次备份的配置 (--rollback)"
+        echo -e "  ${RED}11.${NC} 一键卸载本程序 (--uninstall)"
+        echo -e "  ${GREEN}0.${NC} 退出"
         echo -e "${BOLD}${CYAN}=================================================================${NC}"
         local choice=""
-        prompt_read "请输入选项编号 [0-10]: " choice || exit 0
-
+        prompt_read "请输入选项编号 [0-11]: " choice || exit 0
         case "${choice}" in
-            1) run_rotation ;;
-            2) run_rotation --sync-only ;;
-            3) run_rotation --dry-run ;;
-            4) show_mapping_table ;;
-            5) interactive_configure ;;
-            6) test_api_connection ;;
-            7) view_logs_menu ;;
-            8)
-                if [[ -f "${CRON_FILE}" ]]; then
-                    remove_cron
-                else
-                    setup_cron
-                fi
-                ;;
-            9) rollback_configs ;;
-            10) uninstall_all ;;
+            1) execute_workflow "init" ;;
+            2) execute_workflow "force_long" ;;
+            3) execute_workflow "cron_daily" ;;
+            4) execute_workflow "sync_only" ;;
+            5) execute_workflow "dry_run" ;;
+            6) show_mapping_table ;;
+            7) interactive_configure ;;
+            8) test_api_connection ;;
+            9) view_logs_menu ;;
+            10) rollback_configs ;;
+            11) uninstall_all ;;
             0|"") exit 0 ;;
-            *) warn "无效的选项 [${choice}]，请重新输入" ;;
+            *) warn "无效选项 [${choice}]" ;;
         esac
     done
 }
@@ -1336,35 +1161,40 @@ usage() {
     cat <<EOF
 用法: sb-rotator [选项]
 
-无参数               打开交互式管理菜单 (含查看日志、一键卸载、手动触发等按钮)
---run                立即执行一次节点密码/UUID轮换并同步至面板
---cron               定时任务模式执行（带随机抖动延迟）
---sync-only          仅获取当前节点完整链接并上传面板（不更换密码/UUID）
---dry-run            演练模式：打印节点发现结果与待发送 JSON，不实际修改配置
---status             显示本机节点列表与面板 Node ID 映射表
---test-api           发送 Ping 请求测试面板 API 连通性与签名校验
---config             进入交互式配置向导
---logs               查看最近 50 行运行日志
---rollback           将节点配置恢复到上一次轮换前的备份
---uninstall          一键卸载 sb-rotator 及定时任务
--h, --help           显示此帮助信息
+无参数                  打开交互式管理菜单
+--init                  生成/重置全部 6 个槽位 (5长效 L:01~05 + 1短期 D:00) 并全量上传面板
+--cron-long             [定时任务 03:00] 按自然年 DOY 每 3 天轮换 1 组长效密码并增量上传
+--force-long [1-5]      手动立即轮换指定(或今日对应)的长效槽位并增量上传
+--cron-daily            [定时任务 04:00] 每日轮换短期 24h 密码 (D:00 / P24h) 并增量上传
+--rotate-daily          手动立即轮换短期 24h 密码 (D:00 / P24h) 并增量上传
+--sync-only             不修改密码，全量上传当前 6 个槽位链接与到期时间
+--dry-run               演练模式：预览多槽位 JSON 载荷
+--status                查看所有节点的 6 槽位凭据与到期时间戳
+--test-api              测试面板 API 连通性
+--config                进入交互式配置向导
+--logs                  查看最近 50 行运行日志
+--rollback              回滚到上一次轮换前的节点配置
+--uninstall             一键卸载本程序
 EOF
 }
 
 case "${1:-}" in
-    --run)       run_rotation ;;
-    --cron)      run_rotation --cron ;;
-    --sync-only) run_rotation --sync-only ;;
-    --dry-run)   run_rotation --dry-run ;;
-    --status)    show_mapping_table ;;
-    --test-api)  test_api_connection ;;
-    --config)    interactive_configure ;;
-    --logs)      tail -n 50 "${LOG_FILE}" 2>/dev/null || echo "暂无日志" ;;
-    --rollback)  rollback_configs ;;
-    --uninstall) uninstall_all ;;
-    -h|--help)   usage ;;
-    "")          main_menu ;;
-    *)           err "未知参数: $1"; usage; exit 1 ;;
+    --init|--run)    execute_workflow "init" ;;
+    --cron-long)     execute_workflow "cron_long" "" 1 ;;
+    --force-long)    execute_workflow "force_long" "${2:-}" 0 ;;
+    --cron-daily)    execute_workflow "cron_daily" "" 1 ;;
+    --rotate-daily)  execute_workflow "cron_daily" "" 0 ;;
+    --sync-only)     execute_workflow "sync_only" ;;
+    --dry-run)       execute_workflow "dry_run" ;;
+    --status)        show_mapping_table ;;
+    --test-api)      test_api_connection ;;
+    --config)        interactive_configure ;;
+    --logs)          tail -n 50 "${LOG_FILE}" 2>/dev/null || echo "暂无日志" ;;
+    --rollback)      rollback_configs ;;
+    --uninstall)     uninstall_all ;;
+    -h|--help)       usage ;;
+    "")              main_menu ;;
+    *)               err "未知参数: $1"; usage; exit 1 ;;
 esac
 
 __EOF_SB_ROTATOR_CORE__
@@ -1376,53 +1206,51 @@ __EOF_SB_ROTATOR_CORE__
 main() {
     check_root
     echo -e "\n${BOLD}${CYAN}=================================================================${NC}"
-    echo -e "${BOLD}   欢迎使用 233boy/sing-box 每日自动轮换密码 & 面板同步一键脚本${NC}"
+    echo -e "${BOLD}   233boy/sing-box 多槽位阶梯自动换密 & 面板同步一键脚本 v2.0.0${NC}"
     echo -e "${BOLD}${CYAN}=================================================================${NC}"
 
     if [[ -x "${INSTALL_BIN}" && -f "${INSTALL_DIR}/config.env" && "${1:-}" == "" ]]; then
         echo -e "${GREEN}检测到本机已安装 sb-rotator，请选择操作：${NC}"
-        echo -e "  ${GREEN}1)${NC} 更新核心脚本至 v1.2.2 并打开管理面板"
-        echo -e "  ${GREEN}2)${NC} 更新核心脚本至 v1.2.2 并重新引导配置"
-        echo -e "  ${GREEN}3)${NC} 查看运行日志"
+        echo -e "  ${GREEN}1)${NC} 升级核心脚本至 v2.0.0 并立即执行首次 6 槽位全量初始化与上传"
+        echo -e "  ${GREEN}2)${NC} 升级核心脚本至 v2.0.0 并打开管理菜单"
+        echo -e "  ${GREEN}3)${NC} 重新引导配置"
         echo -e "  ${RED}4)${NC} 一键卸载"
         echo -e "  ${GREEN}0)${NC} 退出"
         local exist_opt=""
         prompt_read "请选择 [0-4，默认 1]: " exist_opt || exit 0
         case "${exist_opt:-1}" in
-            1) deploy_core_script; echo -e "${GREEN}[成功] 已更新至 v1.2.2！${NC}"; exec "${INSTALL_BIN}" ;;
-            2) ;;
-            3) deploy_core_script; exec "${INSTALL_BIN}" --logs ;;
+            1)
+                check_dependencies
+                deploy_core_script
+                "${INSTALL_BIN}" --init || true
+                exec "${INSTALL_BIN}"
+                ;;
+            2)
+                check_dependencies
+                deploy_core_script
+                exec "${INSTALL_BIN}"
+                ;;
+            3) ;;
             4) deploy_core_script; exec "${INSTALL_BIN}" --uninstall ;;
             0) exit 0 ;;
         esac
     fi
 
     check_dependencies
-    check_singbox_installed
     deploy_core_script
+    echo -e "${GREEN}[成功] 核心程序 v2.0.0 已安装至 ${INSTALL_BIN} (快捷命令: sbr)${NC}"
 
-    echo -e "${GREEN}[成功] 核心程序 v1.2.2 已安装至 ${INSTALL_BIN} (快捷命令: sb-rotator 或 sbr)${NC}"
-
-    # 启动交互式安装配置向导
     "${INSTALL_BIN}" --config
 
     echo ""
-    local do_ping=""
-    prompt_read "是否现在测试一次面板 API 连通性？(y/n，默认 y): " do_ping || true
-    if [[ "${do_ping:-y}" =~ ^[Yy]$ ]]; then
-        "${INSTALL_BIN}" --test-api || true
-    fi
-
-    echo ""
-    local do_sync=""
-    prompt_read "是否立即执行一次【仅同步当前节点链接到面板（不改密）】以完成初始对接？(y/n，默认 y): " do_sync || true
-    if [[ "${do_sync:-y}" =~ ^[Yy]$ ]]; then
-        "${INSTALL_BIN}" --sync-only || true
+    local do_init=""
+    prompt_read "是否立即生成全部 6 组槽位密码 (5组长效+1组24h短期) 并全量上传至面板？(y/n，默认 y): " do_init || true
+    if [[ "${do_init:-y}" =~ ^[Yy]$ ]]; then
+        "${INSTALL_BIN}" --init || true
     fi
 
     echo -e "\n${BOLD}${GREEN}=================================================================${NC}"
-    echo -e "${BOLD}${GREEN} 🎉 部署完成！后续随时输入 ${YELLOW}sbr${GREEN} 或 ${YELLOW}sb-rotator${GREEN} 即可打开管理面板${NC}"
-    echo -e "${BOLD}${GREEN}    查看日志、手动触发换密、修改配置或一键卸载！${NC}"
+    echo -e "${BOLD}${GREEN} 🎉 v2.0.0 部署完成！随时输入 ${YELLOW}sbr${GREEN} 即可管理 6 槽位状态与日志${NC}"
     echo -e "${BOLD}${GREEN}=================================================================${NC}"
 }
 
